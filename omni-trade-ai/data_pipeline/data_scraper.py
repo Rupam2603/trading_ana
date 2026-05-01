@@ -7,8 +7,15 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # --- Configuration ---
 BACKEND_URL = "http://localhost:8000/api/ingest"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+LLM_MODEL = "anthropic/claude-3.5-sonnet" # Upgraded for perfect scalping precision
 TICKER_MAP = {
     "BTC-USD": "BTCUSD",
     "ETH-USD": "ETHUSD",
@@ -56,20 +63,57 @@ class OmniDataScraper:
             logger.error(f"Error fetching {yf_ticker}: {e}")
             return None
 
+    async def get_llm_analysis(self, headlines: List[str]):
+        """Uses OpenRouter (Nemotron) to analyze market sentiment and reasoning."""
+        if not OPENROUTER_API_KEY:
+            return None, "API Key missing. Using VADER fallback."
+        
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        prompt = (
+            "Analyze these financial headlines. Return ONLY a JSON object with: "
+            "'score' (float between -1 and 1) and 'reasoning' (max 15 words analysis). "
+            f"Headlines: {' | '.join(headlines)}"
+        )
+        
+        try:
+            async with self.session.post(url, headers=headers, json={
+                "model": LLM_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"}
+            }) as resp:
+                if resp.status == 200:
+                    res = await resp.json()
+                    content = json.loads(res['choices'][0]['message']['content'])
+                    return content.get('score', 0.0), content.get('reasoning', "Stable market conditions.")
+                return None, "LLM Offline."
+        except Exception as e:
+            logger.error(f"LLM Error: {e}")
+            return None, "Analysis error."
+
     async def get_sentiment(self):
-        """Scrapes headlines from a financial news source and returns average sentiment."""
+        """Scrapes headlines and returns (sentiment_score, reasoning)."""
         try:
             async with self.session.get("https://news.google.com/rss/search?q=finance+market") as resp:
                 text = await resp.text()
                 soup = BeautifulSoup(text, 'xml')
                 headlines = [item.title.text for item in soup.find_all('item')[:10]]
                 
+                # Try LLM first
+                llm_score, reasoning = await self.get_llm_analysis(headlines)
+                if llm_score is not None:
+                    return llm_score, reasoning
+                
+                # Fallback to VADER
                 scores = [analyzer.polarity_scores(h)['compound'] for h in headlines]
                 avg_sentiment = sum(scores) / len(scores) if scores else 0.0
-                return avg_sentiment
+                return avg_sentiment, "VADER basic sentiment analysis."
         except Exception as e:
             logger.error(f"Error scraping news: {e}")
-            return 0.0
+            return 0.0, "Sentiment data unavailable."
 
     async def push_to_backend(self, payload: dict):
         """Sends data to the FastAPI ingestion endpoint."""
@@ -85,8 +129,8 @@ class OmniDataScraper:
         logger.info("OmniTrade Pipeline ONLINE. Fetching real market data...")
         
         while True:
-            # 1. Get Global Sentiment
-            sentiment = await self.get_sentiment()
+            # 1. Get Global Sentiment & Reasoning
+            sentiment, reasoning = await self.get_sentiment()
             
             # 2. Fetch all Tickers
             for yf_id, internal_id in TICKER_MAP.items():
@@ -97,6 +141,7 @@ class OmniDataScraper:
                         "price": data["price"],
                         "volume": data["volume"],
                         "sentiment": sentiment,
+                        "reasoning": reasoning,
                         "timestamp": time.time()
                     }
                     await self.push_to_backend(payload)
