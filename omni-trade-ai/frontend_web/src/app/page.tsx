@@ -245,63 +245,73 @@ const Dashboard = () => {
 
   // --- WebSocket Connection / Real-time Price Fetching ---
   useEffect(() => {
-    let mockInterval: NodeJS.Timeout;
     let priceInterval: NodeJS.Timeout;
+    let wsReconnectTimeout: NodeJS.Timeout;
+    let ws: WebSocket | null = null;
+    let wsConnected = false;
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/signals";
     
-    try {
-      const ws = new WebSocket(wsUrl);
-      
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.ticker === selectedTicker) {
-          const tf = timeframeRef.current;
-          if (data.timeframes && data.timeframes[tf]) {
-            const tfData = data.timeframes[tf];
-            data.signal = tfData.signal;
-            data.confidence = tfData.confidence;
-            data.entry_price = tfData.entry_price;
-            data.stop_loss = tfData.stop_loss;
-            data.target_price = tfData.target_price;
+    const connectWebSocket = () => {
+      try {
+        ws = new WebSocket(wsUrl);
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.ticker === selectedTicker) {
+              const tf = timeframeRef.current;
+              if (data.timeframes && data.timeframes[tf]) {
+                const tfData = data.timeframes[tf];
+                data.signal = tfData.signal;
+                data.confidence = tfData.confidence;
+                data.entry_price = tfData.entry_price;
+                data.stop_loss = tfData.stop_loss;
+                data.target_price = tfData.target_price;
+              }
+              // Update live data with real prices from backend
+              setLiveData(prev => ({
+                ...data,
+                price: data.price || prev.price,
+                ticker: selectedTicker,
+                entry_price: data.entry_price || 0,
+                signal: data.signal || 'HOLD',
+                confidence: data.confidence || 0,
+                stop_loss: data.stop_loss || 0,
+                target_price: data.target_price || 0,
+                metrics: data.metrics || prev.metrics,
+                reasoning: data.reasoning || prev.reasoning
+              }));
+              if (data.signal !== "HOLD") {
+                addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'} [${tf}M]: Confidence ${(data.confidence * 100).toFixed(1)}% | Price: $${data.price?.toFixed(2)}`);
+              }
+            }
+          } catch (e) {
+            console.error('WebSocket message parse error:', e);
           }
-          // Use the real price from backend instead of mock data
-          setLiveData(prev => ({
-            ...data,
-            // Keep the real price from the backend
-            price: data.price,
-            entry_price: data.entry_price || prev.entry_price,
-            signal: data.signal || prev.signal,
-            confidence: data.confidence || prev.confidence,
-            stop_loss: data.stop_loss || prev.stop_loss,
-            target_price: data.target_price || prev.target_price,
-            metrics: data.metrics || prev.metrics,
-            reasoning: data.reasoning || prev.reasoning
-          }));
-          if (data.signal !== "HOLD" && data.signal !== prev.signal) {
-            addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'} [${tf}M]: Confidence ${(data.confidence * 100).toFixed(1)}%`);
-          }
-        }
-      };
-      
-      ws.onerror = () => {
-        addLog(`WebSocket unreachable. Starting direct price fetching for ${selectedTicker}.`);
-        startDirectPriceFetching();
-      };
-      
-      ws.onopen = () => {
-        addLog(`System connected to WebSocket feed for ${selectedTicker}`);
-      };
+        };
+        
+        ws.onerror = () => {
+          wsConnected = false;
+          addLog(`WebSocket error. Fetching live prices directly...`);
+          startDirectPriceFetching();
+        };
+        
+        ws.onopen = () => {
+          wsConnected = true;
+          addLog(`Connected to live feed: ${selectedTicker}`);
+        };
 
-      return () => {
-        ws.close();
-        clearInterval(mockInterval);
-        clearInterval(priceInterval);
-      };
-    } catch (e) {
-      startDirectPriceFetching();
-    }
+        ws.onclose = () => {
+          wsConnected = false;
+          // Retry connection after 5 seconds
+          wsReconnectTimeout = setTimeout(connectWebSocket, 5000);
+        };
+      } catch (e) {
+        startDirectPriceFetching();
+      }
+    };
     
-    async function fetchDirectPrice() {
+    const fetchDirectPrice = async () => {
       try {
         // Map internal ticker back to yfinance ticker
         const yfTickerMap: Record<string, string> = {
@@ -317,8 +327,9 @@ const Dashboard = () => {
         if (!yfTicker) return;
         
         const response = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${yfTicker}?interval=1m&range=1d`);
-        const data = await response.json();
-        const price = data.chart.result[0].meta.regularMarketPrice;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        const price = result.chart.result[0].meta.regularMarketPrice;
         
         if (price) {
           setLiveData(prev => ({
@@ -328,17 +339,26 @@ const Dashboard = () => {
           }));
         }
       } catch (error) {
-        // Fallback to mock data if direct fetching fails
-        startMockData();
+        console.error('Direct price fetch error:', error);
       }
-    }
+    };
     
-    function startDirectPriceFetching() {
+    const startDirectPriceFetching = () => {
       // Fetch price every 2 seconds
-      priceInterval = setInterval(fetchDirectPrice, 2000);
-      // Start with immediate fetch
-      fetchDirectPrice();
-    }
+      if (!priceInterval) {
+        priceInterval = setInterval(fetchDirectPrice, 2000);
+        fetchDirectPrice(); // Immediate first fetch
+      }
+    };
+    
+    connectWebSocket();
+
+    return () => {
+      if (ws) ws.close();
+      clearInterval(priceInterval);
+      clearTimeout(wsReconnectTimeout);
+    };
+  }, [selectedTicker])
     
     function startMockData() {
       const basePrices: Record<string, number> = {
