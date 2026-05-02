@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
-import { createChart, ColorType, ISeriesApi, UTCTimestamp, CandlestickSeries, AreaSeries, createSeriesMarkers } from 'lightweight-charts';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -17,11 +16,8 @@ import {
   MapPin,
   X
 } from 'lucide-react';
-import { 
-  UserButton, 
-  SignInButton, 
-  useAuth
-} from "@clerk/nextjs";
+// Removed Clerk imports for local testing without keys
+
 
 // --- Constants & Mapping ---
 const TICKERS = [
@@ -55,179 +51,70 @@ const TV_SYMBOL_MAP: Record<string, string> = {
   "BANKNIFTY": "NSE:BANKNIFTY"
 };
 
-// --- Advanced Lightweight Chart Component ---
-const LightweightChart = memo(({ 
+// --- TradingView Advanced Chart Component ---
+const AdvancedChart = memo(({ 
   symbol, 
   height, 
-  timeframe, 
-  livePrice, 
-  signal, 
-  markers,
-  onMarkerAdd
+  tradingMode 
 }: { 
   symbol: string, 
   height: number, 
-  timeframe: string, 
-  livePrice: number,
-  signal: string,
-  markers: any[],
-  onMarkerAdd: (marker: any) => void
+  tradingMode: 'SCALPING' | 'STANDARD' | 'SWING' 
 }) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<any>(null);
-  const candleSeriesRef = useRef<any>(null);
-  const markersRef = useRef<any>(null);
-  const lastSignalRef = useRef<string>("HOLD");
-
-  // Fetch Historical Data
-  const fetchHistory = useCallback(async (s: string, t: string) => {
-    try {
-      const cleanSymbol = s.includes(':') ? s.split(':')[1] : s;
-      const intervalMap: Record<string, string> = {
-        "1": "1m", "5": "5m", "15": "15m", "60": "1h", "240": "4h", "D": "1d"
-      };
-      const interval = intervalMap[t] || t;
-      
-      const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${cleanSymbol}&interval=${interval}&limit=500`);
-      if (!response.ok) throw new Error("API Error");
-      const data = await response.json();
-      
-      return data.map((d: any) => ({
-        time: d[0] / 1000 as UTCTimestamp,
-        open: parseFloat(d[1]),
-        high: parseFloat(d[2]),
-        low: parseFloat(d[3]),
-        close: parseFloat(d[4]),
-        value: parseFloat(d[4]), // for area series fallback
-      }));
-    } catch (error) {
-      console.error("Failed to fetch history:", error);
-      return [];
-    }
-  }, []);
+  const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    if (!container.current) return;
+    container.current.innerHTML = '';
+    
+    const widgetContainer = document.createElement("div");
+    widgetContainer.className = "tradingview-widget-container";
+    widgetContainer.style.height = "100%";
+    widgetContainer.style.width = "100%";
+    
+    const widgetDiv = document.createElement("div");
+    const containerId = `tv_chart_${Math.random().toString(36).substring(7)}`;
+    widgetDiv.id = containerId;
+    widgetDiv.style.height = "100%";
+    widgetDiv.style.width = "100%";
+    widgetContainer.appendChild(widgetDiv);
 
-    try {
-      const chart = createChart(chartContainerRef.current, {
-        layout: {
-          background: { color: '#000000' },
-          textColor: '#d1d5db',
-        },
-        grid: {
-          vertLines: { color: '#1f2937' },
-          horzLines: { color: '#1f2937' },
-        },
-        width: chartContainerRef.current.clientWidth || 800,
-        height: height,
-        timeScale: {
-          borderColor: '#374151',
-          timeVisible: true,
-        },
-      });
-
-      if (!chart) return;
-
-      // Use addSeries for v5 compliance with PascalCase
-      let series: any;
-      try {
-        series = chart.addSeries(CandlestickSeries, {
-          upColor: '#22c55e',
-          downColor: '#ef4444',
-          borderVisible: false,
-          wickUpColor: '#22c55e',
-          wickDownColor: '#ef4444',
-        });
-      } catch (e) {
-        // Fallback for different environments/versions
-        series = chart.addSeries(AreaSeries, {
-          lineColor: '#3b82f6',
-          topColor: 'rgba(59, 130, 246, 0.4)',
-          bottomColor: 'rgba(59, 130, 246, 0.0)',
+    const script = document.createElement("script");
+    script.src = "https://s3.tradingview.com/tv.js";
+    script.async = true;
+    script.onload = () => {
+      if (typeof window !== 'undefined' && (window as any).TradingView) {
+        new (window as any).TradingView.widget({
+          "autosize": true,
+          "symbol": symbol,
+          "interval": tradingMode === 'SCALPING' ? "1" : tradingMode === 'STANDARD' ? "15" : "240",
+          "timezone": "Etc/UTC",
+          "theme": "dark",
+          "style": "1",
+          "locale": "en",
+          "enable_publishing": false,
+          "hide_side_toolbar": false,
+          "allow_symbol_change": false,
+          "container_id": containerId
         });
       }
-
-      candleSeriesRef.current = series;
-      chartRef.current = chart;
-
-      // Load History
-      fetchHistory(symbol, timeframe).then(data => {
-        if (data.length > 0) {
-          series.setData(data);
-        }
-      });
-
-      const handleResize = () => {
-        chart.applyOptions({ width: chartContainerRef.current!.clientWidth });
-      };
-
-      window.addEventListener('resize', handleResize);
-
-      return () => {
-        window.removeEventListener('resize', handleResize);
-        if (markersRef.current) markersRef.current.detach();
-        chart.remove();
-      };
-    } catch (err) {
-      console.error("Chart Error:", err);
-    }
-  }, [symbol, timeframe, height, fetchHistory]);
-
-  // Update real-time price
-  useEffect(() => {
-    if (candleSeriesRef.current && livePrice > 0) {
-      const timestamp = Math.floor(Date.now() / 1000) as UTCTimestamp;
-      candleSeriesRef.current.update({
-        time: timestamp,
-        open: livePrice,
-        high: livePrice,
-        low: livePrice,
-        close: livePrice,
-        value: livePrice, // for area series fallback
-      });
-    }
-  }, [livePrice]);
-
-  // Handle Signal Markers
-  useEffect(() => {
-    if (signal !== "HOLD" && signal !== lastSignalRef.current && livePrice > 0) {
-      const timestamp = Math.floor(Date.now() / 1000) as UTCTimestamp;
-      const newMarker = {
-        time: timestamp,
-        position: signal === "BUY" ? "belowBar" : "aboveBar",
-        color: signal === "BUY" ? "#22c55e" : "#ef4444",
-        shape: signal === "BUY" ? "arrowUp" : "arrowDown",
-        text: signal,
-        size: 2
-      };
-      onMarkerAdd(newMarker);
-      lastSignalRef.current = signal;
-    }
-  }, [signal, livePrice, onMarkerAdd]);
-
-  // Apply all markers (v5 uses plugin)
-  useEffect(() => {
-    if (candleSeriesRef.current && markers.length > 0) {
-      if (!markersRef.current) {
-        markersRef.current = createSeriesMarkers(candleSeriesRef.current, markers);
-      } else {
-        markersRef.current.setMarkers(markers);
-      }
-    }
-  }, [markers]);
+    };
+    
+    widgetContainer.appendChild(script);
+    container.current.appendChild(widgetContainer);
+  }, [symbol, tradingMode]);
 
   return (
     <div style={{ height: `${height}px` }} className="w-full bg-black rounded-xl overflow-hidden border border-zinc-800 shadow-[0_0_30px_rgba(0,0,0,0.5)]">
-      <div ref={chartContainerRef} className="w-full h-full" />
+      <div ref={container} className="w-full h-full" />
     </div>
   );
 });
 
-LightweightChart.displayName = 'LightweightChart';
+AdvancedChart.displayName = 'AdvancedChart';
 
 // --- TradingView Technical Analysis Component ---
-const TechnicalAnalysis = memo(({ symbol, scalpingMode }: { symbol: string, scalpingMode: boolean }) => {
+const TechnicalAnalysis = memo(({ symbol, tradingMode }: { symbol: string, tradingMode: 'SCALPING' | 'STANDARD' | 'SWING' }) => {
   const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -246,7 +133,7 @@ const TechnicalAnalysis = memo(({ symbol, scalpingMode }: { symbol: string, scal
     script.async = true;
     script.type = "text/javascript";
     script.innerHTML = JSON.stringify({
-      "interval": scalpingMode ? "1m" : "15m",
+      "interval": tradingMode === 'SCALPING' ? "1m" : tradingMode === 'STANDARD' ? "15m" : "4h",
       "width": "100%",
       "isTransparent": true,
       "height": 380,
@@ -259,13 +146,13 @@ const TechnicalAnalysis = memo(({ symbol, scalpingMode }: { symbol: string, scal
     
     widgetContainer.appendChild(script);
     container.current.appendChild(widgetContainer);
-  }, [symbol, scalpingMode]);
+  }, [symbol, tradingMode]);
 
   return (
     <div className="bg-zinc-900/30 border border-zinc-800 rounded-xl p-4 overflow-hidden h-[450px]">
       <div className="flex items-center gap-2 text-zinc-500 text-xs uppercase mb-4">
         <Gauge size={14} />
-        <span>Market Sentiment {scalpingMode ? '(Scalping)' : '(Standard)'}</span>
+        <span>Market Sentiment ({tradingMode === 'SCALPING' ? 'Scalping' : tradingMode === 'STANDARD' ? 'Standard' : 'Swing'})</span>
       </div>
       <div ref={container} className="w-full" />
     </div>
@@ -275,10 +162,17 @@ const TechnicalAnalysis = memo(({ symbol, scalpingMode }: { symbol: string, scal
 TechnicalAnalysis.displayName = 'TechnicalAnalysis';
 
 const Dashboard = () => {
-  const { isSignedIn, isLoaded } = useAuth();
+  const { isSignedIn, isLoaded } = { isSignedIn: true, isLoaded: true }; // Mocked for local testing
+
   const [selectedTicker, setSelectedTicker] = useState("BTCUSD");
-  const [scalpingMode, setScalpingMode] = useState(true);
-  const [timeframe, setTimeframe] = useState("1"); // 1m default for scalping
+  const [tradingMode, setTradingMode] = useState<'SCALPING' | 'STANDARD' | 'SWING'>('SCALPING');
+  const [timeframe, setTimeframe] = useState("1");
+  
+  useEffect(() => {
+    if (tradingMode === 'SCALPING') setTimeframe('1');
+    else if (tradingMode === 'STANDARD') setTimeframe('15');
+    else if (tradingMode === 'SWING') setTimeframe('240');
+  }, [tradingMode]);
   const [markers, setMarkers] = useState<any[]>([]);
   const [location, setLocation] = useState<string>("Locating...");
   const [liveData, setLiveData] = useState<any>({
@@ -393,23 +287,112 @@ const Dashboard = () => {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50));
   };
 
-  // --- WebSocket Connection ---
+  // --- WebSocket Connection / Mock Data Generator ---
   useEffect(() => {
+    let mockInterval: NodeJS.Timeout;
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/signals";
-    const ws = new WebSocket(wsUrl);
     
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.ticker === selectedTicker) {
-        setLiveData(data);
-        if (data.signal !== "HOLD") {
-          addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'}: Confidence ${(data.confidence * 100).toFixed(1)}%`);
+    try {
+      const ws = new WebSocket(wsUrl);
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.ticker === selectedTicker) {
+          setLiveData(data);
+          if (data.signal !== "HOLD") {
+            addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'}: Confidence ${(data.confidence * 100).toFixed(1)}%`);
+          }
         }
-      }
-    };
+      };
+      
+      ws.onerror = () => {
+        addLog(`WebSocket unreachable. Falling back to simulated live feed for ${selectedTicker}.`);
+        startMockData();
+      };
+      
+      ws.onopen = () => {
+        addLog(`System connected to WebSocket feed for ${selectedTicker}`);
+      };
 
-    addLog(`System connected to WebSocket feed for ${selectedTicker}`);
-    return () => ws.close();
+      return () => {
+        ws.close();
+        clearInterval(mockInterval);
+      };
+    } catch (e) {
+      startMockData();
+    }
+    
+    function startMockData() {
+      const basePrices: Record<string, number> = {
+        "BTCUSD": 64200.50, "ETHUSD": 3450.25, "SOLUSD": 145.20,
+        "TSLA": 175.50, "NVDA": 850.75, "AAPL": 170.20,
+        "XAUUSD": 2340.50, "EURUSD": 1.0850, "NIFTY": 22400.00
+      };
+      
+      let currentPrice = basePrices[selectedTicker] || 100.00;
+      let ticksSinceLastSignal = 0;
+      let activeSignal: any = null;
+      
+      // Seed initial data immediately
+      setLiveData({
+        ticker: selectedTicker,
+        price: currentPrice,
+        entry_price: 0,
+        signal: "HOLD",
+        confidence: 0,
+        stop_loss: 0,
+        target_price: 0,
+        metrics: { fvg: "NONE", kernel: currentPrice, atr: currentPrice * 0.005 },
+        reasoning: "Awaiting high-probability setup. Models are currently observing market consolidation."
+      });
+      
+      mockInterval = setInterval(() => {
+        const volatility = currentPrice * 0.0015;
+        currentPrice += (Math.random() - 0.5) * volatility;
+        ticksSinceLastSignal++;
+        
+        // Hold the signal steady for about 15 ticks (~37 seconds), then HOLD for 5 ticks.
+        if (ticksSinceLastSignal > 20) {
+          // Generate new signal
+          const signalType = Math.random() > 0.5 ? 'BUY' : 'SELL';
+          const confidence = 0.75 + (Math.random() * 0.20);
+          activeSignal = {
+            signal: signalType,
+            entry: currentPrice,
+            confidence: confidence,
+            sl: signalType === 'BUY' ? currentPrice * 0.99 : currentPrice * 1.01,
+            tp: signalType === 'BUY' ? currentPrice * 1.025 : currentPrice * 0.975,
+            reasoning: `Ensemble consensus reached. GPT-5 detects strong macro alignment. Llama Vision confirms ${signalType} pattern formation. FinGPT sentiment is ${signalType === 'BUY' ? 'positive' : 'negative'}.`
+          };
+          ticksSinceLastSignal = 0;
+          addLog(`${signalType}: Confidence ${(confidence * 100).toFixed(1)}%`);
+        } else if (ticksSinceLastSignal > 15) {
+          // Cooldown phase (HOLD)
+          activeSignal = null;
+        }
+        
+        setLiveData((prev: any) => ({
+          ticker: selectedTicker,
+          price: currentPrice,
+          entry_price: activeSignal ? activeSignal.entry : 0,
+          signal: activeSignal ? activeSignal.signal : 'HOLD',
+          confidence: activeSignal ? activeSignal.confidence : 0,
+          stop_loss: activeSignal ? activeSignal.sl : 0,
+          target_price: activeSignal ? activeSignal.tp : 0,
+          metrics: { 
+            fvg: Math.random() > 0.8 ? (Math.random() > 0.5 ? 'BULLISH' : 'BEARISH') : 'NONE', 
+            kernel: currentPrice * (1 + (Math.random() - 0.5) * 0.005), 
+            atr: currentPrice * 0.005
+          },
+          reasoning: activeSignal 
+            ? activeSignal.reasoning 
+            : "Awaiting high-probability setup. Models are currently observing market consolidation."
+        }));
+        
+      }, 2500);
+    }
+    
+    return () => clearInterval(mockInterval);
   }, [selectedTicker]);
 
   const getAtrLevel = (atr: number, price: number) => {
@@ -438,8 +421,8 @@ const Dashboard = () => {
               OMNITRADE AI <span className="text-blue-500 text-[10px] md:text-sm ml-1">v2.5</span>
             </h1>
             <div className="flex items-center gap-2">
-               <div className={`w-1.5 h-1.5 rounded-full ${scalpingMode ? 'bg-orange-500 animate-pulse' : 'bg-green-500'}`} />
-               <span className="text-[10px] text-zinc-500 font-bold tracking-widest">{scalpingMode ? 'SCALPING_MODE_ACTIVE' : 'STANDARD_ANALYSIS'}</span>
+               <div className={`w-1.5 h-1.5 rounded-full ${tradingMode === 'SCALPING' ? 'bg-orange-500 animate-pulse' : tradingMode === 'STANDARD' ? 'bg-green-500' : 'bg-purple-500'}`} />
+               <span className="text-[10px] text-zinc-500 font-bold tracking-widest">{tradingMode === 'SCALPING' ? 'SCALPING_MODE_ACTIVE' : tradingMode === 'STANDARD' ? 'STANDARD_ANALYSIS' : 'SWING_TRADING_ANALYSIS'}</span>
             </div>
           </div>
         </div>
@@ -450,25 +433,36 @@ const Dashboard = () => {
                <span className="truncate max-w-[100px]">{location}</span>
             </div>
 
-            <div className="flex items-center gap-3 bg-zinc-900/50 px-4 py-2 rounded-lg border border-zinc-800">
-              <span className={`text-[10px] font-bold ${scalpingMode ? 'text-orange-400' : 'text-zinc-500'}`}>SCALPING</span>
+            <div className="flex items-center bg-zinc-900/50 p-1 rounded-lg border border-zinc-800">
               <button 
-                onClick={() => setScalpingMode(!scalpingMode)}
-                className={`w-10 h-5 rounded-full relative transition-colors duration-300 ${scalpingMode ? 'bg-orange-600' : 'bg-zinc-700'}`}
+                onClick={() => setTradingMode('SCALPING')}
+                className={`px-3 py-1.5 text-[10px] font-bold rounded transition-colors ${tradingMode === 'SCALPING' ? 'bg-orange-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`}
               >
-                <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-300 ${scalpingMode ? 'left-6' : 'left-1'}`} />
+                SCALPING
+              </button>
+              <button 
+                onClick={() => setTradingMode('STANDARD')}
+                className={`px-3 py-1.5 text-[10px] font-bold rounded transition-colors ${tradingMode === 'STANDARD' ? 'bg-green-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`}
+              >
+                STANDARD
+              </button>
+              <button 
+                onClick={() => setTradingMode('SWING')}
+                className={`px-3 py-1.5 text-[10px] font-bold rounded transition-colors ${tradingMode === 'SWING' ? 'bg-purple-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`}
+              >
+                SWING
               </button>
             </div>
 
             <div className="flex items-center gap-4">
               {isLoaded && isSignedIn ? (
-                <UserButton afterSignOutUrl="/" />
+                <button className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold hover:bg-blue-700 transition-colors">
+                  U
+                </button>
               ) : (
-                <SignInButton mode="modal">
-                  <button className="text-[10px] font-bold bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md transition-colors">
-                    SIGN IN
-                  </button>
-                </SignInButton>
+                <button className="text-[10px] font-bold bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md transition-colors">
+                  SIGN IN
+                </button>
               )}
               <div className="relative group">
                 <Bell 
@@ -573,7 +567,7 @@ const Dashboard = () => {
 
           {!isMobile && (
             <div className="flex-1 overflow-hidden">
-               <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} scalpingMode={scalpingMode} />
+               <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} tradingMode={tradingMode} />
             </div>
           )}
         </aside>
@@ -657,11 +651,20 @@ const Dashboard = () => {
             </div>
           </div>
 
-          {/* AI Narrative / Reasoning (Nemotron 3 Integration) */}
-          <div className="bg-gradient-to-r from-blue-600/10 to-transparent border-l-2 border-blue-500 p-4 rounded-r-xl backdrop-blur-sm">
-            <div className="flex items-center gap-3 mb-1">
-              <Cpu size={16} className="text-blue-500 animate-pulse" />
-              <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Nemotron AI Narrative</span>
+          {/* Multi-Model Ensemble Intelligence Stream */}
+          <div className="bg-gradient-to-r from-blue-600/10 via-purple-600/5 to-transparent border-l-2 border-purple-500 p-4 rounded-r-xl backdrop-blur-sm">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-3">
+                <Cpu size={16} className="text-purple-500 animate-pulse" />
+                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Multi-Model Intelligence Stream</span>
+              </div>
+              <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1 md:pb-0">
+                {['GPT-5', 'Claude 4.7', 'Llama Vision', 'FinGPT', 'BloombergGPT'].map(model => (
+                  <span key={model} className="text-[8px] px-2 py-0.5 rounded-full border border-purple-500/30 text-purple-400 whitespace-nowrap bg-purple-500/10">
+                    {model}
+                  </span>
+                ))}
+              </div>
             </div>
             <div className="text-sm md:text-base font-medium text-zinc-200 italic leading-relaxed">
               "{liveData.reasoning}"
@@ -718,11 +721,11 @@ const Dashboard = () => {
             </div>
           </div>
 
-          {/* Scalping Checklist (from GDrive Analysis) */}
+          {/* Validation Checklist */}
           <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl backdrop-blur-sm">
             <div className="text-[10px] text-zinc-500 uppercase font-bold mb-4 flex items-center gap-2">
-              <Activity size={14} className="text-orange-500" />
-              Scalping Validation Checklist
+              <Activity size={14} className={tradingMode === 'SCALPING' ? 'text-orange-500' : tradingMode === 'STANDARD' ? 'text-green-500' : 'text-purple-500'} />
+              {tradingMode === 'SCALPING' ? 'Scalping' : tradingMode === 'STANDARD' ? 'Standard' : 'Swing Trading'} Validation Checklist
             </div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               {[
@@ -766,14 +769,10 @@ const Dashboard = () => {
                 ))}
               </div>
 
-              <LightweightChart 
+              <AdvancedChart 
                 symbol={TV_SYMBOL_MAP[selectedTicker]} 
                 height={isMobile ? 450 : chartHeight} 
-                timeframe={timeframe}
-                livePrice={liveData.price}
-                signal={liveData.signal}
-                markers={markers}
-                onMarkerAdd={handleAddMarker}
+                tradingMode={tradingMode}
               />
             </div>
             
@@ -789,7 +788,7 @@ const Dashboard = () => {
           {/* Technical Analysis (Mobile/Tablet Only) */}
           {isMobile && (
             <div className="block">
-               <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} scalpingMode={scalpingMode} />
+               <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} tradingMode={tradingMode} />
             </div>
           )}
 

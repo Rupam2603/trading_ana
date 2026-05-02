@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "jetro": {
+      "type": "stdio",
+      "command": "C:\\Users\\dasru\\.jetro\\runtime\\node-win32-x64.exe",
+      "args": [
+        "C:\\Users\\dasru\\.jetro\\mcp-server\\index.js"
+      ],
+      "env": {
+        "JET_WORKSPACE": "d:\\Project\\trading_ana",
+        "JET_API_URL": "https://api.jetro.ai",
+        "PATH": "C:\\Users\\dasru\\.jetro\\runtime;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files\\dotnet\\;C:\\Program Files\\nodejs\\;C:\\Users\\dasru\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\dasru\\AppData\\Roaming\\npm;C:\\Users\\dasru\\AppData\\Local\\Programs\\Antigravity\\bin"
+      }
+    }
+  }
+}
