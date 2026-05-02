@@ -1,12 +1,110 @@
 @import "tailwindcss";
 
-:root {
-  --background: #000000;
-  --foreground: #ffffff;
+/* ============================================================
+   OmniTrade AI — Custom Design Token System
+   ============================================================ */
+
+:root,
+[data-theme="dark"] {
+  --bg:          #0B0E14;
+  --surface:     #151A22;
+  --surface-2:   #1C2333;
+  --border:      #252D3D;
+  --text-primary: #F0F4F8;
+  --text-muted:  #9BA1C6;
+  --neutral:     #B388FF;
+  --bullish:     #2196F3;
+  --bearish:     #FF9800;
+  --prediction:  #00E5FF;
+  --red-soft:    rgba(255,152,0,0.12);
+  --blue-soft:   rgba(33,150,243,0.12);
+  --cyan-soft:   rgba(0,229,255,0.10);
+  --violet-soft: rgba(179,136,255,0.10);
+}
+
+[data-theme="light"] {
+  --bg:          #F4F6FB;
+  --surface:     #FFFFFF;
+  --surface-2:   #EFF1F8;
+  --border:      #D8DCF0;
+  --text-primary: #0B0E14;
+  --text-muted:  #5D6494;
+  --neutral:     #7C4DFF;
+  --bullish:     #1565C0;
+  --bearish:     #E65100;
+  --prediction:  #0097A7;
+  --red-soft:    rgba(230,81,0,0.08);
+  --blue-soft:   rgba(21,101,192,0.08);
+  --cyan-soft:   rgba(0,151,167,0.08);
+  --violet-soft: rgba(124,77,255,0.08);
+}
+
+/* ============================================================
+   Base Resets & Native Scroll
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-geist-mono), 'Courier New', monospace;
+  /* Native scroll — no overflow trapping */
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 100vh;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
+/* ============================================================
+   Utility Classes
+   ============================================================ */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Themed card surface */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* Glowing indicator dot */
+.dot-pulse {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
+  50%       { opacity: 0.5; box-shadow: 0 0 2px currentColor; }
+}
+
+/* Smooth fade-in for dropdowns */
+@keyframes fade-drop {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-fade-drop {
+  animation: fade-drop 0.18s ease forwards;
+}
+
+/* ============================================================
+   Lightweight Chart container override
+   ============================================================ */
+.lw-chart-container {
+  position: relative;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}

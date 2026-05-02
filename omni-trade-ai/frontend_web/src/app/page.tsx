@@ -1,14 +1,13 @@
 "use client";
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  Activity, 
-  Cpu, 
-  Layers, 
+import {
+  TrendingUp,
+  TrendingDown,
+  Activity,
+  Cpu,
+  Layers,
   Terminal as TerminalIcon,
-  Search,
   Settings,
   Bell,
   BarChart3,
@@ -16,7 +15,11 @@ import {
   MapPin,
   X
 } from 'lucide-react';
-// Removed Clerk imports for local testing without keys
+import { ThemeToggle } from '@/components/ThemeToggle';
+import { RatioSelector } from '@/components/RatioSelector';
+import { AssetSearch, ASSET_CATALOGUE } from '@/components/AssetSearch';
+import { LWChart } from '@/components/LWChart';
+import { useTheme } from '@/app/providers';
 
 
 // --- Constants & Mapping ---
@@ -51,69 +54,7 @@ const TV_SYMBOL_MAP: Record<string, string> = {
   "BANKNIFTY": "NSE:BANKNIFTY"
 };
 
-// --- TradingView Advanced Chart Component ---
-const AdvancedChart = memo(({ 
-  symbol, 
-  height, 
-  tradingMode 
-}: { 
-  symbol: string, 
-  height: number, 
-  tradingMode: 'SCALPING' | 'STANDARD' | 'SWING' 
-}) => {
-  const container = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!container.current) return;
-    container.current.innerHTML = '';
-    
-    const widgetContainer = document.createElement("div");
-    widgetContainer.className = "tradingview-widget-container";
-    widgetContainer.style.height = "100%";
-    widgetContainer.style.width = "100%";
-    
-    const widgetDiv = document.createElement("div");
-    const containerId = `tv_chart_${Math.random().toString(36).substring(7)}`;
-    widgetDiv.id = containerId;
-    widgetDiv.style.height = "100%";
-    widgetDiv.style.width = "100%";
-    widgetContainer.appendChild(widgetDiv);
-
-    const script = document.createElement("script");
-    script.src = "https://s3.tradingview.com/tv.js";
-    script.async = true;
-    script.onload = () => {
-      setTimeout(() => {
-        if (typeof window !== 'undefined' && (window as any).TradingView && document.getElementById(containerId)) {
-          new (window as any).TradingView.widget({
-            "autosize": true,
-            "symbol": symbol,
-            "interval": tradingMode === 'SCALPING' ? "1" : tradingMode === 'STANDARD' ? "15" : "240",
-            "timezone": "Etc/UTC",
-            "theme": "dark",
-            "style": "1",
-            "locale": "en",
-            "enable_publishing": false,
-            "hide_side_toolbar": false,
-            "allow_symbol_change": false,
-            "container_id": containerId
-          });
-        }
-      }, 200);
-    };
-    
-    widgetContainer.appendChild(script);
-    container.current.appendChild(widgetContainer);
-  }, [symbol, tradingMode]);
-
-  return (
-    <div style={{ height: `${height}px` }} className="w-full bg-black rounded-xl overflow-hidden border border-zinc-800 shadow-[0_0_30px_rgba(0,0,0,0.5)]">
-      <div ref={container} className="w-full h-full" />
-    </div>
-  );
-});
-
-AdvancedChart.displayName = 'AdvancedChart';
+// AdvancedChart replaced by LWChart component (see src/components/LWChart.tsx)
 
 // --- TradingView Technical Analysis Component ---
 const TechnicalAnalysis = memo(({ symbol, tradingMode }: { symbol: string, tradingMode: 'SCALPING' | 'STANDARD' | 'SWING' }) => {
@@ -164,13 +105,16 @@ const TechnicalAnalysis = memo(({ symbol, tradingMode }: { symbol: string, tradi
 TechnicalAnalysis.displayName = 'TechnicalAnalysis';
 
 const Dashboard = () => {
-  const { isSignedIn, isLoaded } = { isSignedIn: true, isLoaded: true }; // Mocked for local testing
+  const { isSignedIn, isLoaded } = { isSignedIn: true, isLoaded: true };
+  const { theme } = useTheme();
 
   const [selectedTicker, setSelectedTicker] = useState("BTCUSD");
+  const [selectedTvSymbol, setSelectedTvSymbol] = useState("BINANCE:BTCUSDT");
   const [tradingMode, setTradingMode] = useState<'SCALPING' | 'STANDARD' | 'SWING'>('SCALPING');
   const [timeframe, setTimeframe] = useState("1");
+  const [ratioMultiplier, setRatioMultiplier] = useState(2.5);
   const timeframeRef = useRef(timeframe);
-  
+
   useEffect(() => {
     timeframeRef.current = timeframe;
   }, [timeframe]);
@@ -180,6 +124,11 @@ const Dashboard = () => {
     else if (tradingMode === 'STANDARD') setTimeframe('15');
     else if (tradingMode === 'SWING') setTimeframe('240');
   }, [tradingMode]);
+
+  const handleAssetSelect = useCallback((id: string, tvSymbol: string) => {
+    setSelectedTicker(id);
+    setSelectedTvSymbol(tvSymbol);
+  }, []);
   const [markers, setMarkers] = useState<any[]>([]);
   const [location, setLocation] = useState<string>("Locating...");
   const [liveData, setLiveData] = useState<any>({
@@ -398,7 +347,7 @@ const Dashboard = () => {
           signal: activeSignal ? activeSignal.signal : 'HOLD',
           confidence: activeSignal ? activeSignal.confidence : 0,
           stop_loss: activeSignal ? (activeSignal.signal === 'BUY' ? currentPrice * (1 - 0.01 * scale) : currentPrice * (1 + 0.01 * scale)) : 0,
-          target_price: activeSignal ? (activeSignal.signal === 'BUY' ? currentPrice * (1 + 0.025 * scale) : currentPrice * (1 - 0.025 * scale)) : 0,
+          target_price: activeSignal ? (activeSignal.signal === 'BUY' ? currentPrice * (1 + 0.01 * scale * ratioMultiplier) : currentPrice * (1 - 0.01 * scale * ratioMultiplier)) : 0,
           metrics: { 
             fvg: Math.random() > 0.8 ? (Math.random() > 0.5 ? 'BULLISH' : 'BEARISH') : 'NONE', 
             kernel: currentPrice * (1 + (Math.random() - 0.5) * 0.005), 
@@ -423,174 +372,127 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white font-mono p-2 md:p-4 select-none overflow-x-hidden">
-      <style jsx global>{`
-        :root {
-          --sidebar-width: ${isMobile ? '100%' : `${sidebarWidth}px`};
-        }
+    <div
+      className="min-h-screen font-mono p-2 md:p-4 select-none"
+      style={{ background: 'var(--bg)', color: 'var(--text-primary)' }}
+    >
+      <style>{`
+        :root { --sidebar-width: ${isMobile ? '100%' : `${sidebarWidth}px`}; }
       `}</style>
       
       {/* Header / Nav */}
-      <header className="flex flex-col md:flex-row items-center justify-between border-b border-zinc-800 pb-4 mb-4 gap-4 md:gap-0">
+      <header
+        className="flex flex-col md:flex-row items-center justify-between pb-4 mb-4 gap-4 md:gap-0"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
         <div className="flex items-center gap-4">
-          <div className="bg-blue-600 p-2 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.4)]">
-            <Cpu size={24} className="text-white" />
+          <div className="p-2 rounded-lg" style={{ background: 'var(--bullish)', boxShadow: '0 0 15px rgba(33,150,243,0.4)' }}>
+            <Cpu size={24} style={{ color: '#fff' }} />
           </div>
           <div>
             <h1 className="text-lg md:text-xl font-bold tracking-tighter uppercase">
-              OMNITRADE AI <span className="text-blue-500 text-[10px] md:text-sm ml-1">v2.5</span>
+              OMNITRADE AI <span className="text-[10px] md:text-sm ml-1" style={{ color: 'var(--prediction)' }}>v2.5</span>
             </h1>
             <div className="flex items-center gap-2">
-               <div className={`w-1.5 h-1.5 rounded-full ${tradingMode === 'SCALPING' ? 'bg-orange-500 animate-pulse' : tradingMode === 'STANDARD' ? 'bg-green-500' : 'bg-purple-500'}`} />
-               <span className="text-[10px] text-zinc-500 font-bold tracking-widest">{tradingMode === 'SCALPING' ? 'SCALPING_MODE_ACTIVE' : tradingMode === 'STANDARD' ? 'STANDARD_ANALYSIS' : 'SWING_TRADING_ANALYSIS'}</span>
+               <div className={`w-1.5 h-1.5 rounded-full ${tradingMode === 'SCALPING' ? 'bg-orange-500 animate-pulse' : tradingMode === 'STANDARD' ? 'animate-pulse' : 'animate-pulse'}`}
+                 style={{ background: tradingMode === 'SCALPING' ? '#FF9800' : tradingMode === 'STANDARD' ? 'var(--bullish)' : '#B388FF' }}
+               />
+               <span className="text-[10px] font-bold tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                 {tradingMode === 'SCALPING' ? 'SCALPING_MODE' : tradingMode === 'STANDARD' ? 'STANDARD_MODE' : 'SWING_MODE'}
+               </span>
             </div>
           </div>
         </div>
-        
-          <div className="flex items-center gap-4 md:gap-6 text-zinc-400 w-full md:w-auto justify-between md:justify-end">
-            <div className="hidden lg:flex items-center gap-2 bg-zinc-900/50 px-3 py-1.5 rounded-lg border border-zinc-800 text-[10px] font-bold text-zinc-500">
-               <MapPin size={12} className="text-blue-500" />
-               <span className="truncate max-w-[100px]">{location}</span>
-            </div>
 
-            <div className="flex items-center bg-zinc-900/50 p-1 rounded-lg border border-zinc-800">
-              <button 
-                onClick={() => setTradingMode('SCALPING')}
-                className={`px-3 py-1.5 text-[10px] font-bold rounded transition-colors ${tradingMode === 'SCALPING' ? 'bg-orange-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`}
-              >
-                SCALPING
-              </button>
-              <button 
-                onClick={() => setTradingMode('STANDARD')}
-                className={`px-3 py-1.5 text-[10px] font-bold rounded transition-colors ${tradingMode === 'STANDARD' ? 'bg-green-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`}
-              >
-                STANDARD
-              </button>
-              <button 
-                onClick={() => setTradingMode('SWING')}
-                className={`px-3 py-1.5 text-[10px] font-bold rounded transition-colors ${tradingMode === 'SWING' ? 'bg-purple-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`}
-              >
-                SWING
-              </button>
-            </div>
-
-            <div className="flex items-center gap-4">
-              {isLoaded && isSignedIn ? (
-                <button className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold hover:bg-blue-700 transition-colors">
-                  U
-                </button>
-              ) : (
-                <button className="text-[10px] font-bold bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md transition-colors">
-                  SIGN IN
-                </button>
-              )}
-              <div className="relative group">
-                <Bell 
-                  size={18} 
-                  className={`hover:text-white cursor-pointer hidden md:block transition-colors ${showNotifications ? 'text-white' : ''}`} 
-                  onClick={() => {
-                    setShowNotifications(!showNotifications);
-                    setShowSettings(false);
-                  }}
-                />
-                {notifications.length > 0 && (
-                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full border border-black animate-pulse" />
-                )}
-              </div>
-              <Settings 
-                size={18} 
-                className={`hover:text-white cursor-pointer hidden md:block transition-colors ${showSettings ? 'text-white' : ''}`} 
-                onClick={() => {
-                  setShowSettings(!showSettings);
-                  setShowNotifications(false);
-                }}
-              />
-            </div>
+        <div className="flex items-center gap-3 md:gap-4 w-full md:w-auto justify-between md:justify-end">
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+             <MapPin size={12} style={{ color: 'var(--bullish)' }} />
+             <span className="truncate max-w-[100px]">{location}</span>
           </div>
+
+          <div className="flex items-center p-1 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            {(['SCALPING', 'STANDARD', 'SWING'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setTradingMode(m)}
+                className="px-3 py-1.5 text-[10px] font-bold rounded transition-all"
+                style={{
+                  background: tradingMode === m
+                    ? m === 'SCALPING' ? '#FF9800' : m === 'STANDARD' ? 'var(--bullish)' : '#B388FF'
+                    : 'transparent',
+                  color: tradingMode === m ? '#000' : 'var(--text-muted)',
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
+            <div className="relative group">
+              <Bell size={18} style={{ color: 'var(--text-muted)' }}
+                className="hover:text-white cursor-pointer hidden md:block transition-colors"
+                onClick={() => { setShowNotifications(!showNotifications); setShowSettings(false); }}
+              />
+              {notifications.length > 0 && (
+                <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full border border-black animate-pulse" />
+              )}
+            </div>
+            <Settings size={18} style={{ color: 'var(--text-muted)' }}
+              className="hover:text-white cursor-pointer hidden md:block transition-colors"
+              onClick={() => { setShowSettings(!showSettings); setShowNotifications(false); }}
+            />
+          </div>
+        </div>
       </header>
 
-      <div className="flex flex-col md:flex-row gap-4 items-start h-auto md:h-[calc(100vh-140px)]">
-        {/* Sidebar - Ticker Selection */}
-        <aside 
-          style={{ width: 'var(--sidebar-width)' }} 
-          className="flex-shrink-0 flex flex-col gap-4 overflow-hidden"
+
+
+      <div className="flex flex-col md:flex-row gap-4 items-start">
+        {/* Sidebar */}
+        <aside
+          style={{ width: isMobile ? '100%' : `${sidebarWidth}px` }}
+          className="flex-shrink-0 flex flex-col gap-3"
         >
-          <div className="space-y-2">
-            <div className="text-[9px] text-zinc-500 uppercase tracking-widest px-2">Instruments</div>
-            <div className="flex md:flex-col gap-2 overflow-x-auto md:overflow-y-auto scrollbar-hide pb-2 md:pb-0 px-1">
-              {TICKERS.map(ticker => (
-                <button
-                  key={ticker}
-                  onClick={() => setSelectedTicker(ticker)}
-                  className={`flex-shrink-0 md:flex-shrink text-left px-3 py-2 rounded-md border transition-all ${
-                    selectedTicker === ticker 
-                    ? 'bg-blue-600/10 border-blue-500/50 text-blue-400' 
-                    : 'bg-zinc-900/30 border-zinc-800 text-zinc-400 hover:border-zinc-700'
-                  }`}
-                >
-                  <div className="flex justify-between items-center gap-4">
-                    <span className="text-xs font-bold">{ticker}</span>
-                    {selectedTicker === ticker && <Activity size={10} className="text-blue-500 animate-pulse" />}
-                  </div>
-                </button>
+          {/* Asset Search */}
+          <div className="space-y-1">
+            <div className="text-[9px] font-bold uppercase tracking-widest px-1" style={{ color: 'var(--text-muted)' }}>Instruments</div>
+            <AssetSearch selectedId={selectedTicker} onSelect={handleAssetSelect} />
+          </div>
+
+          {/* R:R Selector */}
+          <RatioSelector initialRatio={2.5} onRatioChange={setRatioMultiplier} />
+
+          {/* Strategy Intelligence */}
+          <div className="p-4 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="text-[10px] uppercase mb-3 flex items-center gap-2 font-bold tracking-wider" style={{ color: 'var(--text-muted)' }}>
+              <TerminalIcon size={12} style={{ color: '#FF9800' }} />
+              Strategy Intel
+            </div>
+            <div className="space-y-2">
+              {[
+                { k: 'STRUCTURE', v: 'CHoCH / BOS', col: 'var(--bullish)' },
+                { k: 'CISD', v: liveData.metrics?.fvg !== 'NONE' ? 'IMBALANCE' : 'BALANCED', col: liveData.metrics?.fvg !== 'NONE' ? '#FF9800' : 'var(--text-muted)' },
+                { k: 'VOL_FILTER', v: 'OPTIMAL', col: 'var(--bullish)' },
+              ].map(({ k, v, col }) => (
+                <div key={k} className="flex justify-between items-center p-2 rounded" style={{ background: 'var(--surface-2)' }}>
+                  <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{k}</span>
+                  <span className="text-[10px] font-bold" style={{ color: col }}>{v}</span>
+                </div>
               ))}
             </div>
           </div>
-          
-          <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl">
-             <div className="text-zinc-500 text-[10px] uppercase mb-2 flex items-center gap-2">
-                <MapPin size={12} className="text-blue-500" />
-                User Tracking
-             </div>
-             <div className="space-y-3">
-               <div className="text-[11px] text-zinc-300 leading-relaxed italic">
-                  {location === "Locating..." ? 
-                    "Attempting to establish geolocation via browser API..." :
-                    `Current Hub: ${location}. Local market node latency synchronized.`
-                  }
-               </div>
-               <div className="flex items-center gap-4 text-[9px] font-bold">
-                  <div className="flex items-center gap-1.5 text-zinc-500">
-                    <div className={`w-1 h-1 rounded-full ${location !== "Locating..." && location !== "Access Denied" ? 'bg-green-500' : 'bg-red-500'}`} />
-                    GEO_LOCKED
-                  </div>
-                  <div className="flex items-center gap-1.5 text-zinc-500">
-                    <div className="w-1 h-1 rounded-full bg-blue-500" />
-                    IP_SHIELD_ON
-                  </div>
-               </div>
-             </div>
-          </div>
-
-          <div className="bg-gradient-to-b from-zinc-900/40 to-black border border-zinc-800/50 p-4 rounded-xl">
-             <div className="text-zinc-500 text-[10px] uppercase mb-3 flex items-center gap-2 font-bold tracking-wider">
-                <TerminalIcon size={12} className="text-orange-500" />
-                Strategy Intelligence
-             </div>
-             <div className="space-y-3">
-                <div className="flex justify-between items-center bg-black/40 p-2 rounded border border-zinc-800/50">
-                  <span className="text-[9px] text-zinc-500">STRUCTURE</span>
-                  <span className="text-[10px] font-bold text-blue-400">CHoCH / BOS</span>
-                </div>
-                <div className="flex justify-between items-center bg-black/40 p-2 rounded border border-zinc-800/50">
-                  <span className="text-[9px] text-zinc-500">CISD_STATE</span>
-                  <span className={`text-[10px] font-bold ${liveData.metrics?.fvg !== 'NONE' ? 'text-orange-400' : 'text-zinc-500'}`}>
-                    {liveData.metrics?.fvg !== 'NONE' ? 'IMBALANCE_DET' : 'BALANCED'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center bg-black/40 p-2 rounded border border-zinc-800/50">
-                  <span className="text-[9px] text-zinc-500">VOL_FILTER</span>
-                  <span className="text-[10px] font-bold text-green-400">OPTIMAL</span>
-                </div>
-             </div>
-          </div>
 
           {!isMobile && (
-            <div className="flex-1 overflow-hidden">
-               <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} tradingMode={tradingMode} />
+            <div className="flex-1">
+              <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} tradingMode={tradingMode} />
             </div>
           )}
         </aside>
+          
+
 
         {/* Vertical Resizer (Desktop Only) */}
         {!isMobile && (
@@ -600,73 +502,82 @@ const Dashboard = () => {
           />
         )}
 
-        {/* Main Content Area */}
-        <main className="flex-1 w-full min-w-0 h-full space-y-6 md:overflow-y-auto scrollbar-hide pb-10 md:pb-0">
+        {/* Main Content Area — native browser scroll */}
+        <main className="flex-1 w-full min-w-0 space-y-6 pb-16">
           {/* Real-time Stats Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4">
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl backdrop-blur-sm shadow-lg">
-              <div className="text-zinc-500 text-[10px] uppercase flex justify-between items-center">
+            {/* Live Price */}
+            <div className="p-4 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <div className="text-[10px] uppercase flex justify-between items-center" style={{ color: 'var(--text-muted)' }}>
                 <span>Live Price</span>
-                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
+                <div className="w-1.5 h-1.5 rounded-full dot-pulse" style={{ background: 'var(--bullish)', color: 'var(--bullish)' }} />
               </div>
               <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate tracking-tight">
                 {liveData.price > 0 ? liveData.price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
               </div>
             </div>
-            
-            <div className={`bg-zinc-900/40 border p-4 rounded-xl transition-all duration-500 backdrop-blur-sm shadow-lg ${
-              liveData.signal === 'BUY' ? 'border-green-500/30 shadow-[inset_0_0_20px_rgba(34,197,94,0.05)]' : 
-              liveData.signal === 'SELL' ? 'border-red-500/30 shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]' : 'border-zinc-800/50'
-            }`}>
-              <div className="text-zinc-500 text-[10px] uppercase">AI Prediction</div>
-              <div className={`text-lg md:text-xl font-bold mt-1 flex items-center gap-2 ${
-                liveData.signal === 'BUY' ? 'text-green-500' : 
-                liveData.signal === 'SELL' ? 'text-red-500' : 'text-zinc-400'
-              }`}>
+
+            {/* AI Prediction */}
+            <div className="p-4 rounded-xl transition-all duration-500" style={{
+              background: 'var(--surface)',
+              border: `1px solid ${liveData.signal === 'BUY' ? 'var(--bullish)' : liveData.signal === 'SELL' ? 'var(--bearish)' : 'var(--border)'}`,
+              boxShadow: liveData.signal !== 'HOLD' ? `0 0 20px ${liveData.signal === 'BUY' ? 'rgba(33,150,243,0.08)' : 'rgba(255,152,0,0.08)'}` : 'none'
+            }}>
+              <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>AI Prediction</div>
+              <div className="text-lg md:text-xl font-bold mt-1" style={{
+                color: liveData.signal === 'BUY' ? 'var(--bullish)' : liveData.signal === 'SELL' ? 'var(--bearish)' : 'var(--text-muted)'
+              }}>
                 {liveData.signal}
               </div>
             </div>
 
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl backdrop-blur-sm shadow-lg">
-              <div className="text-blue-500/70 text-[10px] uppercase flex items-center gap-1.5 font-bold tracking-widest">
-                 <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                 Entry Point
+            {/* Entry Point */}
+            <div className="p-4 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <div className="text-[10px] uppercase flex items-center gap-1.5 font-bold tracking-widest" style={{ color: 'var(--prediction)' }}>
+                <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--prediction)' }} />
+                Entry Point
               </div>
-              <div className="text-lg md:text-xl font-bold mt-1 text-blue-400 tabular-nums truncate">
+              <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate" style={{ color: 'var(--prediction)' }}>
                 {liveData.entry_price > 0 ? liveData.entry_price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
               </div>
             </div>
 
-            <div className={`bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl backdrop-blur-sm transition-opacity shadow-lg ${liveData.stop_loss > 0 ? 'opacity-100' : 'opacity-40'}`}>
-              <div className="text-red-500/70 text-[10px] uppercase flex items-center gap-1.5">
-                 <div className="w-1 h-1 rounded-full bg-red-500" />
-                 Stop Loss
+            {/* Stop Loss */}
+            <div className="p-4 rounded-xl transition-opacity" style={{
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              opacity: liveData.stop_loss > 0 ? 1 : 0.4
+            }}>
+              <div className="text-[10px] uppercase flex items-center gap-1.5" style={{ color: 'var(--bearish)' }}>
+                <div className="w-1 h-1 rounded-full" style={{ background: 'var(--bearish)' }} />
+                Stop Loss
               </div>
-              <div className="text-lg md:text-xl font-bold mt-1 text-red-400 tabular-nums truncate">
+              <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate" style={{ color: 'var(--bearish)' }}>
                 {liveData.stop_loss > 0 ? liveData.stop_loss.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
               </div>
             </div>
 
-            <div className={`bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl backdrop-blur-sm transition-opacity shadow-lg ${liveData.target_price > 0 ? 'opacity-100' : 'opacity-40'}`}>
-              <div className="text-green-500/70 text-[10px] uppercase flex items-center gap-1.5">
-                 <div className="w-1 h-1 rounded-full bg-green-500" />
-                 Target TP
+            {/* Target TP */}
+            <div className="p-4 rounded-xl transition-opacity" style={{
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              opacity: liveData.target_price > 0 ? 1 : 0.4
+            }}>
+              <div className="text-[10px] uppercase flex items-center gap-1.5" style={{ color: 'var(--bullish)' }}>
+                <div className="w-1 h-1 rounded-full" style={{ background: 'var(--bullish)' }} />
+                Target TP
               </div>
-              <div className="text-lg md:text-xl font-bold mt-1 text-green-400 tabular-nums truncate">
+              <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate" style={{ color: 'var(--bullish)' }}>
                 {liveData.target_price > 0 ? liveData.target_price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
               </div>
             </div>
 
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-xl backdrop-blur-sm shadow-lg col-span-2 lg:col-span-1">
+            {/* AI Confidence */}
+            <div className="p-4 rounded-xl col-span-2 lg:col-span-1" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
               <div className="flex justify-between items-center mb-2">
-                <div className="text-zinc-500 text-[10px] uppercase">AI Confidence</div>
-                <div className="text-blue-500 text-xs font-bold tabular-nums">{(liveData.confidence * 100).toFixed(0)}%</div>
+                <div className="text-[10px] uppercase" style={{ color: 'var(--text-muted)' }}>AI Confidence</div>
+                <div className="text-xs font-bold tabular-nums" style={{ color: 'var(--prediction)' }}>{(liveData.confidence * 100).toFixed(0)}%</div>
               </div>
-              <div className="w-full bg-zinc-800/50 h-1 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-blue-500 transition-all duration-1000 ease-out" 
-                  style={{ width: `${liveData.confidence * 100}%` }}
-                />
+              <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                <div className="h-full transition-all duration-1000 ease-out" style={{ width: `${liveData.confidence * 100}%`, background: 'var(--prediction)' }} />
               </div>
             </div>
           </div>
@@ -789,10 +700,11 @@ const Dashboard = () => {
                 ))}
               </div>
 
-              <AdvancedChart 
-                symbol={TV_SYMBOL_MAP[selectedTicker]} 
-                height={isMobile ? 450 : chartHeight} 
-                tradingMode={tradingMode}
+              <LWChart
+                symbol={selectedTicker}
+                height={isMobile ? 450 : chartHeight}
+                timeframe={timeframe}
+                liveData={liveData}
               />
             </div>
             
