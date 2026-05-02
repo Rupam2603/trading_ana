@@ -243,9 +243,10 @@ const Dashboard = () => {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50));
   };
 
-  // --- WebSocket Connection / Mock Data Generator ---
+  // --- WebSocket Connection / Real-time Price Fetching ---
   useEffect(() => {
     let mockInterval: NodeJS.Timeout;
+    let priceInterval: NodeJS.Timeout;
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/signals";
     
     try {
@@ -263,16 +264,28 @@ const Dashboard = () => {
             data.stop_loss = tfData.stop_loss;
             data.target_price = tfData.target_price;
           }
-          setLiveData(data);
-          if (data.signal !== "HOLD") {
+          // Use the real price from backend instead of mock data
+          setLiveData(prev => ({
+            ...data,
+            // Keep the real price from the backend
+            price: data.price,
+            entry_price: data.entry_price || prev.entry_price,
+            signal: data.signal || prev.signal,
+            confidence: data.confidence || prev.confidence,
+            stop_loss: data.stop_loss || prev.stop_loss,
+            target_price: data.target_price || prev.target_price,
+            metrics: data.metrics || prev.metrics,
+            reasoning: data.reasoning || prev.reasoning
+          }));
+          if (data.signal !== "HOLD" && data.signal !== prev.signal) {
             addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'} [${tf}M]: Confidence ${(data.confidence * 100).toFixed(1)}%`);
           }
         }
       };
       
       ws.onerror = () => {
-        addLog(`WebSocket unreachable. Falling back to simulated live feed for ${selectedTicker}.`);
-        startMockData();
+        addLog(`WebSocket unreachable. Starting direct price fetching for ${selectedTicker}.`);
+        startDirectPriceFetching();
       };
       
       ws.onopen = () => {
@@ -282,9 +295,49 @@ const Dashboard = () => {
       return () => {
         ws.close();
         clearInterval(mockInterval);
+        clearInterval(priceInterval);
       };
     } catch (e) {
-      startMockData();
+      startDirectPriceFetching();
+    }
+    
+    async function fetchDirectPrice() {
+      try {
+        // Map internal ticker back to yfinance ticker
+        const yfTickerMap: Record<string, string> = {
+          "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD",
+          "TSLA": "TSLA", "NVDA": "NVDA", "AAPL": "AAPL", "MSFT": "MSFT", "AMZN": "AMZN",
+          "XAUUSD": "GC=F", "SILVER": "SI=F", "USOIL": "CL=F",
+          "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "JPY=X",
+          "SPX": "^GSPC", "IXIC": "^IXIC", "DJI": "^DJI",
+          "NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK"
+        };
+        
+        const yfTicker = yfTickerMap[selectedTicker];
+        if (!yfTicker) return;
+        
+        const response = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${yfTicker}?interval=1m&range=1d`);
+        const data = await response.json();
+        const price = data.chart.result[0].meta.regularMarketPrice;
+        
+        if (price) {
+          setLiveData(prev => ({
+            ...prev,
+            price: price,
+            ticker: selectedTicker
+          }));
+        }
+      } catch (error) {
+        // Fallback to mock data if direct fetching fails
+        startMockData();
+      }
+    }
+    
+    function startDirectPriceFetching() {
+      // Fetch price every 2 seconds
+      priceInterval = setInterval(fetchDirectPrice, 2000);
+      // Start with immediate fetch
+      fetchDirectPrice();
     }
     
     function startMockData() {
