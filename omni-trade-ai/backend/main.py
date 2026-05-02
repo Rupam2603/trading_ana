@@ -1,5 +1,6 @@
 import asyncio
 import json
+import contextlib
 import time
 import math
 from typing import List, Dict, Optional
@@ -227,8 +228,20 @@ class InferenceEngine:
         
         return "HOLD", 0.48 + (torch.rand(1).item() * 0.04), metrics
 
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start the background scraper
+    scraper_task = asyncio.create_task(scraper.run_forever())
+    yield
+    # Shutdown: Clean up resources
+    scraper_task.cancel()
+    try:
+        await scraper_task
+    except asyncio.CancelledError:
+        pass
+
 # --- FastAPI Implementation ---
-app = FastAPI(title="OmniTrade AI Production Backend")
+app = FastAPI(title="OmniTrade AI Production Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -343,27 +356,27 @@ class OmniDataScraper:
         except Exception: return 0.0, "Sentiment analysis offline."
 
     async def run_forever(self):
-        scraper_session = aiohttp.ClientSession()
-        while True:
-            try:
-                sentiment, reasoning = await self.get_sentiment(scraper_session)
-                for yf_id, internal_id in TICKER_MAP.items():
-                    data = await self.get_market_data(yf_id)
-                    if data:
-                        tick = MarketState(
-                            ticker=internal_id, price=data["price"], volume=data["volume"],
-                            sentiment=sentiment, reasoning=reasoning, timestamp=time.time()
-                        )
-                        await ingest_data(tick)
-                await asyncio.sleep(10) # Cooldown
-            except Exception:
-                await asyncio.sleep(30) # Backoff on error
+        async with aiohttp.ClientSession() as scraper_session:
+            while True:
+                try:
+                    sentiment, reasoning = await self.get_sentiment(scraper_session)
+                    for yf_id, internal_id in TICKER_MAP.items():
+                        data = await self.get_market_data(yf_id)
+                        if data:
+                            tick = MarketState(
+                                ticker=internal_id, price=data["price"], volume=data["volume"],
+                                sentiment=sentiment, reasoning=reasoning, timestamp=time.time()
+                            )
+                            await ingest_data(tick)
+                    await asyncio.sleep(10) # Cooldown
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    await asyncio.sleep(30) # Backoff on error
 
 scraper = OmniDataScraper()
 
-@app.on_event("startup")
-async def start_scraper():
-    asyncio.create_task(scraper.run_forever())
+# Lifespan handles the scraper startup and shutdown
 
 if __name__ == "__main__":
     import uvicorn
