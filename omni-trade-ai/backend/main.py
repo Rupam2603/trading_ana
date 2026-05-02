@@ -303,31 +303,56 @@ async def ingest_data(data: MarketState):
     risk_multiplier = 1.5 if "BTC" in data.ticker else 1.2
     effective_risk = max(0.005, volatility_factor * risk_multiplier)
     
-    entry_price = data.price
-    if signal == "BUY":
-        stop_loss = data.price * (1 - effective_risk)
-        target_price = data.price * (1 + effective_risk * 2.5) # Optimized 1:2.5 R:R
-    elif signal == "SELL":
-        stop_loss = data.price * (1 + effective_risk)
-        target_price = data.price * (1 - effective_risk * 2.5)
-    else:
-        stop_loss = data.price * (1 - (effective_risk * 1.5))
-        target_price = data.price * (1 + (effective_risk * 3.0))
+    # --- Multi-Timeframe Scaling Profiles ---
+    timeframes_map = {
+        "1": 1.0,      # 1m
+        "5": 2.2,      # 5m
+        "15": 3.8,     # 15m
+        "60": 7.5,     # 1H
+        "240": 15.0,    # 4H
+        "D": 35.0      # 1D
+    }
+    
+    tf_predictions = {}
+    for tf_key, scale in timeframes_map.items():
+        tf_risk = effective_risk * scale
+        
+        if signal == "BUY":
+            tf_sl = data.price * (1 - tf_risk)
+            tf_tp = data.price * (1 + tf_risk * 2.5)
+        elif signal == "SELL":
+            tf_sl = data.price * (1 + tf_risk)
+            tf_tp = data.price * (1 - tf_risk * 2.5)
+        else:
+            tf_sl = data.price * (1 - (tf_risk * 1.5))
+            tf_tp = data.price * (1 + (tf_risk * 3.0))
             
+        tf_predictions[tf_key] = {
+            "signal": signal,
+            "confidence": float(confidence),
+            "entry_price": float(data.price),
+            "stop_loss": float(tf_sl),
+            "target_price": float(tf_tp)
+        }
+    
+    # Default values for backward compatibility
+    default_tf = tf_predictions["1"]
+    
     payload = {
         "type": "TICKER_UPDATE",
         "ticker": data.ticker,
         "price": data.price,
-        "entry_price": float(entry_price),
+        "entry_price": default_tf["entry_price"],
         "volume": data.volume,
         "sentiment": data.sentiment,
         "reasoning": reasoning,
         "signal": signal,
         "confidence": float(confidence),
-        "stop_loss": float(stop_loss),
-        "target_price": float(target_price),
+        "stop_loss": default_tf["stop_loss"],
+        "target_price": default_tf["target_price"],
         "metrics": metrics, # FVG, Kernel, ATR
-        "timestamp": data.timestamp
+        "timestamp": data.timestamp,
+        "timeframes": tf_predictions
     }
     
     await manager.broadcast(payload)

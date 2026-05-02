@@ -169,7 +169,12 @@ const Dashboard = () => {
   const [selectedTicker, setSelectedTicker] = useState("BTCUSD");
   const [tradingMode, setTradingMode] = useState<'SCALPING' | 'STANDARD' | 'SWING'>('SCALPING');
   const [timeframe, setTimeframe] = useState("1");
+  const timeframeRef = useRef(timeframe);
   
+  useEffect(() => {
+    timeframeRef.current = timeframe;
+  }, [timeframe]);
+
   useEffect(() => {
     if (tradingMode === 'SCALPING') setTimeframe('1');
     else if (tradingMode === 'STANDARD') setTimeframe('15');
@@ -300,9 +305,18 @@ const Dashboard = () => {
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.ticker === selectedTicker) {
+          const tf = timeframeRef.current;
+          if (data.timeframes && data.timeframes[tf]) {
+            const tfData = data.timeframes[tf];
+            data.signal = tfData.signal;
+            data.confidence = tfData.confidence;
+            data.entry_price = tfData.entry_price;
+            data.stop_loss = tfData.stop_loss;
+            data.target_price = tfData.target_price;
+          }
           setLiveData(data);
           if (data.signal !== "HOLD") {
-            addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'}: Confidence ${(data.confidence * 100).toFixed(1)}%`);
+            addLog(`${data.signal === 'BUY' ? 'SIGNAL_BUY' : 'SIGNAL_SELL'} [${tf}M]: Confidence ${(data.confidence * 100).toFixed(1)}%`);
           }
         }
       };
@@ -373,22 +387,26 @@ const Dashboard = () => {
           activeSignal = null;
         }
         
+        const tf = timeframeRef.current;
+        const scales: any = { "1": 1.0, "5": 2.2, "15": 3.8, "60": 7.5, "240": 15.0, "D": 35.0 };
+        const scale = scales[tf] || 1.0;
+
         setLiveData((prev: any) => ({
           ticker: selectedTicker,
           price: currentPrice,
           entry_price: activeSignal ? activeSignal.entry : 0,
           signal: activeSignal ? activeSignal.signal : 'HOLD',
           confidence: activeSignal ? activeSignal.confidence : 0,
-          stop_loss: activeSignal ? activeSignal.sl : 0,
-          target_price: activeSignal ? activeSignal.tp : 0,
+          stop_loss: activeSignal ? (activeSignal.signal === 'BUY' ? currentPrice * (1 - 0.01 * scale) : currentPrice * (1 + 0.01 * scale)) : 0,
+          target_price: activeSignal ? (activeSignal.signal === 'BUY' ? currentPrice * (1 + 0.025 * scale) : currentPrice * (1 - 0.025 * scale)) : 0,
           metrics: { 
             fvg: Math.random() > 0.8 ? (Math.random() > 0.5 ? 'BULLISH' : 'BEARISH') : 'NONE', 
             kernel: currentPrice * (1 + (Math.random() - 0.5) * 0.005), 
-            atr: currentPrice * 0.005
+            atr: currentPrice * 0.005 * scale
           },
           reasoning: activeSignal 
             ? activeSignal.reasoning 
-            : "Awaiting high-probability setup. Models are currently observing market consolidation."
+            : `Observing ${tf === 'D' ? 'daily' : tf + 'm'} consolidation patterns. Awaiting high-probability breakout alignment.`
         }));
         
       }, 2500);
