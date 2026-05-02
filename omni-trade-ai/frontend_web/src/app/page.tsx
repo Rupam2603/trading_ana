@@ -18,7 +18,7 @@ import {
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { RatioSelector } from '@/components/RatioSelector';
 import { AssetSearch, ASSET_CATALOGUE } from '@/components/AssetSearch';
-import { LWChart } from '@/components/LWChart';
+import { TVChart } from '@/components/TVChart';
 import { useTheme } from '@/app/providers';
 
 
@@ -380,10 +380,18 @@ const Dashboard = () => {
         :root { --sidebar-width: ${isMobile ? '100%' : `${sidebarWidth}px`}; }
       `}</style>
       
-      {/* Header / Nav */}
+      {/* Header / Nav — sticky solid */}
       <header
-        className="flex flex-col md:flex-row items-center justify-between pb-4 mb-4 gap-4 md:gap-0"
-        style={{ borderBottom: '1px solid var(--border)' }}
+        className="sticky top-0 z-50 flex flex-col md:flex-row items-center justify-between pb-3 mb-4 gap-4 md:gap-0 px-1"
+        style={{
+          background: 'var(--surface)',
+          borderBottom: '1px solid var(--border)',
+          paddingTop: '12px',
+          marginLeft: '-8px',
+          marginRight: '-8px',
+          paddingLeft: '12px',
+          paddingRight: '12px',
+        }}
       >
         <div className="flex items-center gap-4">
           <div className="p-2 rounded-lg" style={{ background: 'var(--bullish)', boxShadow: '0 0 15px rgba(33,150,243,0.4)' }}>
@@ -677,44 +685,95 @@ const Dashboard = () => {
           </div>
 
           {/* Chart Section */}
-          <div className="relative group rounded-xl overflow-hidden shadow-2xl border border-zinc-800/50 bg-zinc-950">
-            
-            <div 
-              style={{ height: isMobile ? '450px' : `${chartHeight}px` }} 
-              className="w-full transition-[height] duration-300"
+          <div className="space-y-2">
+            {/* Timeframe + AI Signal toolbar */}
+            <div
+              className="flex items-center justify-between px-3 py-2 rounded-xl"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
             >
-              {/* Timeframe Selector Overlay */}
-              <div className="absolute top-4 right-4 z-20 flex items-center gap-1 bg-black/80 backdrop-blur-md p-1 rounded-lg border border-zinc-700/50">
-                {["1", "5", "15", "60", "240", "D"].map((tf) => (
+              {/* Timeframe buttons */}
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] font-bold uppercase tracking-widest mr-2" style={{ color: 'var(--text-muted)' }}>TF</span>
+                {(['1', '5', '15', '60', '240', 'D'] as const).map((tf) => (
                   <button
                     key={tf}
                     onClick={() => setTimeframe(tf)}
-                    className={`px-3 py-1 text-[10px] font-bold rounded transition-colors ${
-                      timeframe === tf 
-                      ? 'bg-blue-600 text-white' 
-                      : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
+                    className="px-2.5 py-1 text-[10px] font-bold rounded transition-all"
+                    style={{
+                      background: timeframe === tf ? 'var(--bullish)' : 'var(--surface-2)',
+                      color: timeframe === tf ? '#fff' : 'var(--text-muted)',
+                      border: '1px solid',
+                      borderColor: timeframe === tf ? 'var(--bullish)' : 'var(--border)',
+                    }}
                   >
-                    {tf === "60" ? "1H" : tf === "240" ? "4H" : tf === "D" ? "1D" : `${tf}M`}
+                    {tf === '60' ? '1H' : tf === '240' ? '4H' : tf === 'D' ? '1D' : `${tf}M`}
                   </button>
                 ))}
               </div>
 
-              <LWChart
-                symbol={selectedTicker}
-                height={isMobile ? 450 : chartHeight}
+              {/* Live signal pill */}
+              <div className="flex items-center gap-3">
+                {liveData.signal !== 'HOLD' && liveData.entry_price > 0 && (
+                  <>
+                    <div className="flex items-center gap-1.5 text-[9px] font-bold">
+                      <span style={{ color: 'var(--text-muted)' }}>ENTRY</span>
+                      <span style={{ color: 'var(--prediction)', fontFamily: 'monospace' }}>
+                        {liveData.entry_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[9px] font-bold">
+                      <span style={{ color: 'var(--text-muted)' }}>SL</span>
+                      <span style={{ color: 'var(--bearish)', fontFamily: 'monospace' }}>
+                        {liveData.stop_loss.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[9px] font-bold">
+                      <span style={{ color: 'var(--text-muted)' }}>TP</span>
+                      <span style={{ color: 'var(--bullish)', fontFamily: 'monospace' }}>
+                        {liveData.target_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </>
+                )}
+                <div
+                  className="px-3 py-1 rounded-full text-[10px] font-bold"
+                  style={{
+                    background: liveData.signal === 'BUY' ? 'var(--blue-soft)' : liveData.signal === 'SELL' ? 'var(--red-soft)' : 'var(--surface-2)',
+                    color: liveData.signal === 'BUY' ? 'var(--bullish)' : liveData.signal === 'SELL' ? 'var(--bearish)' : 'var(--text-muted)',
+                    border: `1px solid ${liveData.signal === 'BUY' ? 'var(--bullish)' : liveData.signal === 'SELL' ? 'var(--bearish)' : 'var(--border)'}`,
+                  }}
+                >
+                  {liveData.signal} {liveData.confidence > 0 ? `${(liveData.confidence * 100).toFixed(0)}%` : ''}
+                </div>
+              </div>
+            </div>
+
+            {/* TradingView chart */}
+            <div
+              className="relative rounded-xl overflow-hidden shadow-2xl"
+              style={{
+                border: '1px solid var(--border)',
+                height: isMobile ? '500px' : `${chartHeight}px`,
+              }}
+            >
+              <TVChart
+                symbol={selectedTvSymbol}
                 timeframe={timeframe}
+                height={isMobile ? 500 : chartHeight}
                 liveData={liveData}
               />
+
+              {/* Horizontal Resizer (Desktop Only) */}
+              {!isMobile && (
+                <div
+                  onMouseDown={startResizingH}
+                  className="h-1.5 w-full cursor-row-resize rounded-full transition-colors absolute bottom-0 left-0 z-20"
+                  style={{ background: 'transparent' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--bullish)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                />
+              )}
             </div>
-            
-            {/* Horizontal Resizer (Desktop Only) */}
-            {!isMobile && (
-              <div 
-                onMouseDown={startResizingH}
-                className="h-1.5 w-full hover:bg-blue-600/50 cursor-row-resize mt-2 rounded-full transition-colors active:bg-blue-500 absolute bottom-0 left-0 z-20"
-              />
-            )}
           </div>
 
           {/* Technical Analysis (Mobile/Tablet Only) */}
