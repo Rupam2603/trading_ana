@@ -83,21 +83,23 @@ const AdvancedChart = memo(({
     script.src = "https://s3.tradingview.com/tv.js";
     script.async = true;
     script.onload = () => {
-      if (typeof window !== 'undefined' && (window as any).TradingView) {
-        new (window as any).TradingView.widget({
-          "autosize": true,
-          "symbol": symbol,
-          "interval": tradingMode === 'SCALPING' ? "1" : tradingMode === 'STANDARD' ? "15" : "240",
-          "timezone": "Etc/UTC",
-          "theme": "dark",
-          "style": "1",
-          "locale": "en",
-          "enable_publishing": false,
-          "hide_side_toolbar": false,
-          "allow_symbol_change": false,
-          "container_id": containerId
-        });
-      }
+      setTimeout(() => {
+        if (typeof window !== 'undefined' && (window as any).TradingView && document.getElementById(containerId)) {
+          new (window as any).TradingView.widget({
+            "autosize": true,
+            "symbol": symbol,
+            "interval": tradingMode === 'SCALPING' ? "1" : tradingMode === 'STANDARD' ? "15" : "240",
+            "timezone": "Etc/UTC",
+            "theme": "dark",
+            "style": "1",
+            "locale": "en",
+            "enable_publishing": false,
+            "hide_side_toolbar": false,
+            "allow_symbol_change": false,
+            "container_id": containerId
+          });
+        }
+      }, 200);
     };
     
     widgetContainer.appendChild(script);
