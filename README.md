@@ -2,6 +2,8 @@
 
 Professional-grade real-time market analysis and AI predictive trading dashboard.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Rupam2603/trading_ana)
+
 ## Features
 - **Neural-Technical Hybrid Engine**: Combines Temporal Fusion Transformers (TFT) with RSI/EMA cross-validation.
 - **Real-Time Data Pipeline**: High-frequency market data ingestion via Yahoo Finance and WebSockets.
