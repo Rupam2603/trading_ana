@@ -337,13 +337,18 @@ async def ingest_data(data: MarketState):
 class OmniDataScraper:
     def __init__(self):
         self.analyzer = SentimentIntensityAnalyzer()
+        self.current_sentiment = 0.0
+        self.current_reasoning = "Neural-Technical Hybrid Analysis"
 
     async def get_market_data(self, yf_ticker: str):
-        try:
-            ticker = yf.Ticker(yf_ticker)
-            data = ticker.fast_info
-            return {"price": data.last_price, "volume": getattr(data, 'last_volume', 0.0)}
-        except Exception: return None
+        def fetch():
+            try:
+                ticker = yf.Ticker(yf_ticker)
+                data = ticker.fast_info
+                return {"price": data.last_price, "volume": getattr(data, 'last_volume', 0.0)}
+            except Exception:
+                return None
+        return await asyncio.to_thread(fetch)
 
     async def get_sentiment(self, session):
         try:
@@ -355,24 +360,39 @@ class OmniDataScraper:
                 return sum(scores) / len(scores) if scores else 0.0, "Neural-Technical Hybrid Analysis"
         except Exception: return 0.0, "Sentiment analysis offline."
 
-    async def run_forever(self):
-        async with aiohttp.ClientSession() as scraper_session:
+    async def update_sentiment_loop(self):
+        async with aiohttp.ClientSession() as session:
             while True:
                 try:
-                    sentiment, reasoning = await self.get_sentiment(scraper_session)
-                    for yf_id, internal_id in TICKER_MAP.items():
-                        data = await self.get_market_data(yf_id)
-                        if data:
-                            tick = MarketState(
-                                ticker=internal_id, price=data["price"], volume=data["volume"],
-                                sentiment=sentiment, reasoning=reasoning, timestamp=time.time()
-                            )
-                            await ingest_data(tick)
-                    await asyncio.sleep(10) # Cooldown
+                    sentiment, reasoning = await self.get_sentiment(session)
+                    self.current_sentiment = sentiment
+                    self.current_reasoning = reasoning
+                    await asyncio.sleep(60) # Update sentiment every minute
                 except asyncio.CancelledError:
                     break
                 except Exception:
-                    await asyncio.sleep(30) # Backoff on error
+                    await asyncio.sleep(60)
+
+    async def run_forever(self):
+        sentiment_task = asyncio.create_task(self.update_sentiment_loop())
+        while True:
+            try:
+                tasks = [self.get_market_data(yf_id) for yf_id in TICKER_MAP.keys()]
+                results = await asyncio.gather(*tasks)
+                
+                for (yf_id, internal_id), data in zip(TICKER_MAP.items(), results):
+                    if data:
+                        tick = MarketState(
+                            ticker=internal_id, price=data["price"], volume=data["volume"],
+                            sentiment=self.current_sentiment, reasoning=self.current_reasoning, timestamp=time.time()
+                        )
+                        await ingest_data(tick)
+                await asyncio.sleep(2) # Real-time fast cooldown
+            except asyncio.CancelledError:
+                sentiment_task.cancel()
+                break
+            except Exception:
+                await asyncio.sleep(5) # Backoff on error
 
 scraper = OmniDataScraper()
 
