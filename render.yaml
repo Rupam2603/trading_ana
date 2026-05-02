@@ -1,9 +1,9 @@
 services:
-  # Frontend Service (Next.js)
+  # Frontend Service (Next.js) - FREE TIER
   - type: web
     name: omnitrade-frontend
     env: node
-    plan: starter # Recommended for Next.js build performance
+    plan: free
     rootDir: omni-trade-ai/frontend_web
     buildCommand: npm install && npm run build
     startCommand: npm start
@@ -11,31 +11,18 @@ services:
       - key: NEXT_PUBLIC_WS_URL
         description: "The WebSocket URL of the backend (e.g., wss://omnitrade-backend.onrender.com/ws/signals)"
         sync: false
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=450" # Help Next.js build stay within 512MB
 
-  # Backend Service (FastAPI)
+  # Backend Service (FastAPI + Integrated Scraper) - FREE TIER
   - type: web
     name: omnitrade-backend
     env: python
-    plan: starter # Recommended for PyTorch memory requirements
+    plan: free
     rootDir: omni-trade-ai/backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: PYTHON_VERSION
-        value: 3.10.0
-
-  # Data Pipeline (Background Worker)
-  - type: worker
-    name: omnitrade-scraper
-    env: python
-    rootDir: omni-trade-ai/data_pipeline
-    buildCommand: pip install -r requirements.txt
-    startCommand: python data_scraper.py
-    envVars:
-      - key: BACKEND_URL
-        value: http://omnitrade-backend:8000/api/ingest
       - key: OPENROUTER_API_KEY
         sync: false
       - key: PYTHON_VERSION

@@ -11,11 +11,23 @@ from pydantic import BaseModel
 import os
 import aiohttp
 from dotenv import load_dotenv
+import yfinance as yf
+from bs4 import BeautifulSoup
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CLAUDE_MODEL = "anthropic/claude-3.5-sonnet"
+
+TICKER_MAP = {
+    "BTC-USD": "BTCUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD",
+    "TSLA": "TSLA", "NVDA": "NVDA", "AAPL": "AAPL", "MSFT": "MSFT", "AMZN": "AMZN",
+    "GC=F": "XAUUSD", "SI=F": "SILVER", "CL=F": "USOIL",
+    "EURUSD=X": "EURUSD", "GBPUSD=X": "GBPUSD", "JPY=X": "USDJPY",
+    "^GSPC": "SPX", "^IXIC": "IXIC", "^DJI": "DJI",
+    "^NSEI": "NIFTY", "^NSEBANK": "BANKNIFTY"
+}
 
 # --- Enhanced Temporal Fusion Transformer (TFT) Architecture ---
 class TFTLayer(nn.Module):
@@ -308,7 +320,53 @@ async def ingest_data(data: MarketState):
     await manager.broadcast(payload)
     return {"status": "ok", "signal": signal, "confidence": confidence}
 
+# --- Unified Background Scraper ---
+class OmniDataScraper:
+    def __init__(self):
+        self.analyzer = SentimentIntensityAnalyzer()
+
+    async def get_market_data(self, yf_ticker: str):
+        try:
+            ticker = yf.Ticker(yf_ticker)
+            data = ticker.fast_info
+            return {"price": data.last_price, "volume": getattr(data, 'last_volume', 0.0)}
+        except Exception: return None
+
+    async def get_sentiment(self, session):
+        try:
+            async with session.get("https://news.google.com/rss/search?q=finance+market") as resp:
+                text = await resp.text()
+                soup = BeautifulSoup(text, 'xml')
+                headlines = [item.title.text for item in soup.find_all('item')[:10]]
+                scores = [self.analyzer.polarity_scores(h)['compound'] for h in headlines]
+                return sum(scores) / len(scores) if scores else 0.0, "Neural-Technical Hybrid Analysis"
+        except Exception: return 0.0, "Sentiment analysis offline."
+
+    async def run_forever(self):
+        scraper_session = aiohttp.ClientSession()
+        while True:
+            try:
+                sentiment, reasoning = await self.get_sentiment(scraper_session)
+                for yf_id, internal_id in TICKER_MAP.items():
+                    data = await self.get_market_data(yf_id)
+                    if data:
+                        tick = MarketState(
+                            ticker=internal_id, price=data["price"], volume=data["volume"],
+                            sentiment=sentiment, reasoning=reasoning, timestamp=time.time()
+                        )
+                        await ingest_data(tick)
+                await asyncio.sleep(10) # Cooldown
+            except Exception:
+                await asyncio.sleep(30) # Backoff on error
+
+scraper = OmniDataScraper()
+
+@app.on_event("startup")
+async def start_scraper():
+    asyncio.create_task(scraper.run_forever())
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
