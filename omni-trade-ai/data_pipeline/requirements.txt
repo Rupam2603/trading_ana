@@ -1,0 +1,6 @@
+aiohttp
+yfinance
+beautifulsoup4
+vaderSentiment
+lxml
+python-dotenv

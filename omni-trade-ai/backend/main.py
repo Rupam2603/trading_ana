@@ -6,6 +6,7 @@ from typing import List, Dict, Optional
 import torch
 import torch.nn as nn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import aiohttp
@@ -216,6 +217,15 @@ class InferenceEngine:
 
 # --- FastAPI Implementation ---
 app = FastAPI(title="OmniTrade AI Production Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, replace with your specific domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 engine = InferenceEngine()
 
 class ConnectionManager:

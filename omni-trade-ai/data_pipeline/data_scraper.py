@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Configuration ---
-BACKEND_URL = "http://localhost:8000/api/ingest"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000/api/ingest")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 LLM_MODEL = "anthropic/claude-3.5-sonnet" # Upgraded for perfect scalping precision
 TICKER_MAP = {
