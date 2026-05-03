@@ -25,6 +25,8 @@ interface Props {
     stop_loss: number;
     target_price: number;
   };
+  paperPositions?: any[];
+  paperBalance?: number;
   onSymbolChange?: (newSymbol: string) => void;
 }
 
@@ -49,7 +51,7 @@ function generateCandles(basePrice: number, count: number, intervalMin: number):
   return candles;
 }
 
-export function LWChart({ symbol, height, timeframe, liveData, onSymbolChange }: Props) {
+export function LWChart({ symbol, height, timeframe, liveData, paperPositions = [], paperBalance = 100000, onSymbolChange }: Props) {
   const { theme } = useTheme();
   const [isEditingSymbol, setIsEditingSymbol] = useState(false);
   const [tempSymbol, setTempSymbol] = useState(symbol);
@@ -300,10 +302,56 @@ export function LWChart({ symbol, height, timeframe, liveData, onSymbolChange }:
     return () => window.removeEventListener('apply-ai-strategy', handleApplyStrategy);
   }, [symbol]);
 
+  // --- HUD Calculations ---
+  const activeTrade = paperPositions.find(p => symbol.includes(p.ticker) || p.ticker.includes(symbol));
+  let pnl = 0;
+  let pnlPercent = 0;
+  if (activeTrade) {
+    pnl = activeTrade.direction === 'BUY' 
+      ? (liveData.price - activeTrade.entry_price) * activeTrade.quantity
+      : (activeTrade.entry_price - liveData.price) * activeTrade.quantity;
+    pnlPercent = (pnl / (activeTrade.entry_price * activeTrade.quantity)) * 100;
+  }
+
 
   return (
     <div className="lw-chart-container" style={{ height, position: "relative" }}>
       <div ref={chartRef} style={{ width: "100%", height: "100%" }} />
+
+      {/* Floating HUD Overlay (Consistent with TVChart) */}
+      <div className="absolute top-4 left-4 z-10 pointer-events-none select-none flex flex-col gap-2">
+        <div className="px-3 py-1.5 rounded-lg backdrop-blur-md border border-white/5 shadow-2xl flex items-center gap-3"
+             style={{ background: "rgba(11, 14, 20, 0.7)" }}>
+           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+           <div className="flex flex-col">
+              <span className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest">Paper Account</span>
+              <span className="text-[10px] font-black text-zinc-200 tabular-nums">${paperBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+           </div>
+        </div>
+
+        {activeTrade && (
+          <div className="px-4 py-3 rounded-xl backdrop-blur-xl border border-purple-500/20 shadow-2xl flex flex-col gap-1 min-w-[160px] animate-in fade-in slide-in-from-left-2 duration-500"
+               style={{ background: "linear-gradient(135deg, rgba(147, 51, 234, 0.15), rgba(0,0,0,0.85))" }}>
+            <div className="flex justify-between items-center mb-1">
+              <div className="flex items-center gap-2">
+                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${activeTrade.direction === 'BUY' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-rose-500/20 text-rose-500'}`}>
+                  {activeTrade.direction}
+                </span>
+                <span className="text-[10px] font-bold text-zinc-100">{activeTrade.ticker}</span>
+              </div>
+              <span className="text-[8px] font-bold text-zinc-500">LIVE_PNL</span>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className={`text-xl font-black tabular-nums ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+              </span>
+              <span className={`text-[10px] font-bold ${pnl >= 0 ? 'text-emerald-500/60' : 'text-rose-500/60'}`}>
+                {pnl >= 0 ? '▲' : '▼'} {Math.abs(pnlPercent).toFixed(2)}%
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

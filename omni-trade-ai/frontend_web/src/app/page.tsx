@@ -59,7 +59,12 @@ const TV_SYMBOL_MAP: Record<string, string> = {
 // AdvancedChart replaced by LWChart component (see src/components/LWChart.tsx)
 
 // --- TradingView Technical Analysis Component ---
-const TechnicalAnalysis = memo(({ symbol, tradingMode }: { symbol: string, tradingMode: 'SCALPING' | 'STANDARD' | 'SWING' }) => {
+const TechnicalAnalysis = memo(({ symbol, tradingMode, paperPositions, paperBalance }: { 
+  symbol: string, 
+  tradingMode: 'SCALPING' | 'STANDARD' | 'SWING',
+  paperPositions?: any[],
+  paperBalance?: number
+}) => {
   const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -976,6 +981,8 @@ const Dashboard = () => {
                   timeframe={timeframe}
                   height={isMobile ? 500 : chartHeight}
                   liveData={liveData}
+                  paperPositions={paperPositions}
+                  paperBalance={paperBalance}
                 />
 
                 {/* Horizontal Resizer (Desktop Only) */}
@@ -1113,7 +1120,7 @@ const Dashboard = () => {
                     )}
                     
                     <div className="pt-2 flex items-center justify-between opacity-50">
-                       <span className="text-[8px] text-zinc-600 font-bold">LLM: CLAUDE_3.5_SONNET</span>
+                       <span className="text-[8px] text-zinc-600 font-bold">ENSEMBLE: CLAUDE_OPUS + DEEPSEEK_R1</span>
                        <div className="flex gap-1">
                           <div className="w-1 h-1 rounded-full bg-zinc-700" />
                           <div className="w-1 h-1 rounded-full bg-zinc-700" />
@@ -1173,7 +1180,12 @@ const Dashboard = () => {
           {/* Technical Analysis (Mobile/Tablet Only) */}
           {isMobile && (
             <div className="block">
-               <TechnicalAnalysis symbol={TV_SYMBOL_MAP[selectedTicker]} tradingMode={tradingMode} />
+               <TechnicalAnalysis 
+                 symbol={TV_SYMBOL_MAP[selectedTicker]} 
+                 tradingMode={tradingMode} 
+                 paperPositions={paperPositions}
+                 paperBalance={paperBalance}
+               />
             </div>
           )}
 

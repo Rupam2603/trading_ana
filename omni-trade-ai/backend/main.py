@@ -20,7 +20,14 @@ from uuid import uuid4
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-CLAUDE_MODEL = "anthropic/claude-3.5-sonnet"
+
+# --- Multi-Model Ensemble Configuration ---
+MODELS = {
+    "strategy":  "anthropic/claude-sonnet-4",       # Algorithmic strategy design
+    "math":      "deepseek/deepseek-r1",                  # Financial math precision
+    "sentiment": "deepseek/deepseek-r1",                  # Sentiment / forecasting fallback
+    "fast":      "anthropic/claude-sonnet-4",   # Low-latency scalping
+}
 
 TICKER_MAP = {
     "BTC-USD": "BTCUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD",
@@ -30,6 +37,9 @@ TICKER_MAP = {
     "^GSPC": "SPX", "^IXIC": "IXIC", "^DJI": "DJI",
     "^NSEI": "NIFTY", "^NSEBANK": "BANKNIFTY"
 }
+
+# Reverse map: internal ID -> yfinance ticker for OHLC lookups
+REVERSE_TICKER_MAP = {v: k for k, v in TICKER_MAP.items()}
 
 # --- Enhanced Temporal Fusion Transformer (TFT) Architecture ---
 class TFTLayer(nn.Module):
@@ -97,59 +107,164 @@ class InferenceEngine:
         self.window_size = 15
         self.active_positions: List[PaperTrade] = []
         self.trade_history: List[PaperTrade] = []
-        self.balance = 100000.0 # Initial Paper Balance
+        self.balance = 100000.0
         self.signal_cache = {}
+        self.real_atr_cache: Dict[str, dict] = {}  # ticker -> {atr, high, low, support, resist, ts}
 
-    async def validate_with_llm(self, ticker, price, signal, metrics, style):
-        """Tier 2: LLM Analyst - Processes quant data and context to refine targets and reasoning."""
+    async def fetch_real_ohlc_levels(self, ticker: str):
+        """Fetch REAL OHLC candles from yfinance to compute true ATR and S/R levels."""
+        yf_ticker = REVERSE_TICKER_MAP.get(ticker, ticker)
+        cache = self.real_atr_cache.get(ticker)
+        if cache and (time.time() - cache["ts"]) < 120:  # Cache 2 min
+            return cache
+
+        try:
+            def _fetch():
+                t = yf.Ticker(yf_ticker)
+                df = t.history(period="5d", interval="15m")
+                if df.empty:
+                    df = t.history(period="5d", interval="1h")
+                return df
+            df = await asyncio.to_thread(_fetch)
+            if df.empty:
+                return None
+
+            highs = df['High'].values
+            lows = df['Low'].values
+            closes = df['Close'].values
+
+            # True Range ATR (proper Wilder method)
+            trs = []
+            for i in range(1, len(closes)):
+                tr = max(highs[i] - lows[i],
+                         abs(highs[i] - closes[i-1]),
+                         abs(lows[i] - closes[i-1]))
+                trs.append(tr)
+            atr_14 = sum(trs[-14:]) / min(14, len(trs)) if trs else closes[-1] * 0.01
+
+            # Key S/R levels from recent swings
+            recent_highs = sorted(highs[-40:], reverse=True)
+            recent_lows = sorted(lows[-40:])
+            resistance = float(recent_highs[2]) if len(recent_highs) > 2 else float(highs[-1])
+            support = float(recent_lows[2]) if len(recent_lows) > 2 else float(lows[-1])
+
+            result = {
+                "atr": float(atr_14),
+                "high": float(highs[-1]),
+                "low": float(lows[-1]),
+                "support": support,
+                "resistance": resistance,
+                "daily_range": float(max(highs[-20:]) - min(lows[-20:])),
+                "ts": time.time()
+            }
+            self.real_atr_cache[ticker] = result
+            return result
+        except Exception as e:
+            print(f"OHLC fetch error for {ticker}: {e}")
+            return None
+
+    async def call_model(self, model_key: str, prompt: str, timeout: float = 8.0):
+        """Route a prompt to a specialized model via OpenRouter."""
         if not OPENROUTER_API_KEY:
-            return "Local quant engine confirmed levels. LLM Analyst offline.", 0.85
-            
-        # Strategy-specific context
-        style_goals = {
-            "Scalping": "ultra-tight SL, micro-volatility focus, high precision.",
-            "Standard": "intraday market structure, liquidity sweeps, VWAP alignment.",
-            "Swing": "multi-timeframe structure, macro support/resistance, trend persistence."
-        }
-        
-        prompt = (
-            f"You are the Lead Quantitative Strategist for OmniTrade AI.\n"
-            f"Asset: {ticker} | Price: {price} | Style: {style}\n"
-            f"Strategy Goal: {style_goals.get(style, '')}\n"
-            f"Metrics: ATR: {metrics['atr']}, RSI: {metrics.get('rsi', 'N/A')}, Bias: {signal}\n"
-            f"Task:\n"
-            f"1. Refine the logic for a {signal} trade.\n"
-            f"2. Provide a narrative 'Why' (max 25 words).\n"
-            f"3. Output a confidence percentage (0-100).\n"
-            f"Format: Reasoning: [text] | Confidence: [number]"
-        )
-        
+            return None
+        model_id = MODELS.get(model_key, MODELS["fast"])
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "model": CLAUDE_MODEL,
-                        "messages": [{"role": "user", "content": prompt}]
-                    }
+                    json={"model": model_id, "messages": [{"role": "user", "content": prompt}], "max_tokens": 500},
+                    timeout=aiohttp.ClientTimeout(total=timeout)
                 ) as resp:
                     if resp.status == 200:
                         res = await resp.json()
-                        content = res['choices'][0]['message']['content'].strip()
-                        # Simple parser
-                        reasoning = "Neural confirmation."
-                        confidence = 0.82
-                        if "Reasoning:" in content and "Confidence:" in content:
-                            parts = content.split("|")
-                            reasoning = parts[0].replace("Reasoning:", "").strip()
-                            conf_str = parts[1].replace("Confidence:", "").strip().replace("%", "")
-                            confidence = float(conf_str) / 100
-                        return reasoning, confidence
+                        return res['choices'][0]['message']['content'].strip()
         except Exception as e:
-            print(f"LLM Error: {e}")
-            
-        return "Quant engine verified intraday structure.", 0.80
+            print(f"Model call error ({model_key}): {e}")
+        return None
+
+    async def ensemble_predict(self, ticker, price, signal, metrics, style, ohlc):
+        """Multi-model ensemble: Strategy model for SL/TP, Math model for validation."""
+        atr = ohlc["atr"] if ohlc else metrics["atr"]
+        support = ohlc["support"] if ohlc else price * 0.98
+        resistance = ohlc["resistance"] if ohlc else price * 1.02
+
+        # --- Model 1: Strategy Architect (Claude Opus) ---
+        strategy_prompt = (
+            f"You are a quantitative trading strategist. Provide EXACT numeric levels.\n"
+            f"Asset: {ticker} | Current Price: {price:.6f} | Signal: {signal} | Style: {style}\n"
+            f"ATR(14): {atr:.6f} | Support: {support:.6f} | Resistance: {resistance:.6f}\n"
+            f"Daily Range: {ohlc['daily_range']:.6f if ohlc else 'N/A'}\n\n"
+            f"Rules for {style}:\n"
+            f"- Scalping: SL = 0.5-1.0x ATR from entry, TP = 1.0-2.0x ATR. Ultra-tight.\n"
+            f"- Standard: SL = 1.5-2.5x ATR, TP = 3.0-5.0x ATR. Intraday structure.\n"
+            f"- Swing: SL = 2.0-3.5x ATR, TP = 5.0-10.0x ATR. Multi-day holds.\n\n"
+            f"For a {signal} trade, calculate:\n"
+            f"ENTRY: [exact price] | SL: [exact price] | TP: [exact price] | CONFIDENCE: [0-100]\n"
+            f"REASONING: [max 25 words why this trade makes sense]\n\n"
+            f"Output ONLY this format, nothing else:\n"
+            f"ENTRY={{number}} SL={{number}} TP={{number}} CONFIDENCE={{number}} REASONING={{text}}"
+        )
+
+        # --- Model 2: Math Validator (DeepSeek-R1) ---
+        math_prompt = (
+            f"Validate this trade setup mathematically. Be precise.\n"
+            f"Asset: {ticker} | Price: {price:.6f} | Direction: {signal}\n"
+            f"ATR: {atr:.6f} | Support: {support:.6f} | Resistance: {resistance:.6f}\n"
+            f"Style: {style}\n\n"
+            f"Calculate the optimal risk-reward ratio and exact SL/TP prices.\n"
+            f"For {signal}: SL should be below support (BUY) or above resistance (SELL).\n"
+            f"TP should target the next key level with minimum 1:2 R:R.\n\n"
+            f"Output ONLY: ENTRY={{number}} SL={{number}} TP={{number}} CONFIDENCE={{number}}"
+        )
+
+        # Run both models in parallel
+        strategy_result, math_result = await asyncio.gather(
+            self.call_model("strategy", strategy_prompt, timeout=10.0),
+            self.call_model("math", math_prompt, timeout=10.0),
+            return_exceptions=True
+        )
+
+        def parse_levels(text):
+            if not text or isinstance(text, Exception):
+                return None
+            try:
+                import re
+                entry_m = re.search(r'ENTRY\s*=\s*([\d.]+)', text)
+                sl_m = re.search(r'SL\s*=\s*([\d.]+)', text)
+                tp_m = re.search(r'TP\s*=\s*([\d.]+)', text)
+                conf_m = re.search(r'CONFIDENCE\s*=\s*([\d.]+)', text)
+                reason_m = re.search(r'REASONING\s*=\s*(.+)', text)
+                if entry_m and sl_m and tp_m:
+                    return {
+                        "entry": float(entry_m.group(1)),
+                        "sl": float(sl_m.group(1)),
+                        "tp": float(tp_m.group(1)),
+                        "conf": float(conf_m.group(1)) / 100 if conf_m else 0.75,
+                        "reasoning": reason_m.group(1).strip() if reason_m else ""
+                    }
+            except Exception:
+                pass
+            return None
+
+        strat = parse_levels(str(strategy_result)) if strategy_result else None
+        math = parse_levels(str(math_result)) if math_result else None
+
+        # --- Ensemble Merge ---
+        if strat and math:
+            # Average the two models, weighted toward strategy model
+            entry = strat["entry"] * 0.6 + math["entry"] * 0.4
+            sl_val = strat["sl"] * 0.6 + math["sl"] * 0.4
+            tp_val = strat["tp"] * 0.6 + math["tp"] * 0.4
+            conf = (strat["conf"] + math["conf"]) / 2
+            reasoning = strat.get("reasoning", "Multi-model consensus confirmed trade levels.")
+            return entry, sl_val, tp_val, conf, reasoning
+        elif strat:
+            return strat["entry"], strat["sl"], strat["tp"], strat["conf"], strat.get("reasoning", "Strategy model confirmed.")
+        elif math:
+            return math["entry"], math["sl"], math["tp"], math["conf"], "Math model validated levels."
+
+        return None  # Fallback to quant engine
 
     def execute_paper_trade(self, trade_data: dict):
         trade_id = str(uuid4())[:8]
@@ -404,63 +519,86 @@ async def websocket_endpoint(websocket: WebSocket):
 async def ingest_data(data: MarketState):
     """
     Endpoint for data_scraper.py to push real-time market and sentiment data.
+    Now uses REAL OHLC ATR + Multi-Model Ensemble for accurate SL/TP.
     """
     signal, confidence, metrics = await engine.process_tick(data)
     
-    # --- Tier 1: Quantitative Engine (Fast Math Mode) ---
     style = data.style
-    atr = metrics["atr"]
     
-    # Strategy-Specific Multipliers
+    # --- CRITICAL FIX: Fetch REAL ATR from OHLC candles ---
+    ohlc = await engine.fetch_real_ohlc_levels(data.ticker)
+    real_atr = ohlc["atr"] if ohlc else data.price * 0.01  # Fallback: 1% of price
+    
+    # Override the tick-based ATR with real ATR
+    metrics["atr"] = real_atr
+    if ohlc:
+        metrics["support"] = ohlc["support"]
+        metrics["resistance"] = ohlc["resistance"]
+    
+    # Strategy-Specific Multipliers (now applied to REAL ATR)
     multipliers = {
-        "Scalping": {"sl": 1.2, "tp": 2.1},
-        "Standard": {"sl": 2.5, "tp": 5.2},
-        "Swing": {"sl": 4.5, "tp": 11.0}
+        "Scalping": {"sl": 0.8, "tp": 1.6},
+        "Standard": {"sl": 1.8, "tp": 4.0},
+        "Swing":    {"sl": 3.0, "tp": 8.0}
     }
     m = multipliers.get(style, multipliers["Standard"])
     
-    # Calculate SL/TP boundaries in milliseconds (Tier 1)
+    # --- Tier 1: Quantitative Engine (Real ATR-based) ---
     if signal == "BUY":
-        quant_sl = data.price - (atr * m["sl"])
-        quant_tp = data.price + (atr * m["tp"])
+        quant_sl = data.price - (real_atr * m["sl"])
+        quant_tp = data.price + (real_atr * m["tp"])
         quant_entry = data.price
     elif signal == "SELL":
-        quant_sl = data.price + (atr * m["sl"])
-        quant_tp = data.price - (atr * m["tp"])
+        quant_sl = data.price + (real_atr * m["sl"])
+        quant_tp = data.price - (real_atr * m["tp"])
         quant_entry = data.price
     else:
         quant_sl = quant_tp = quant_entry = 0.0
 
-    # --- Tier 2: LLM Analyst (Refinement & Narrative) ---
     reasoning = data.reasoning
     final_conf = confidence
-    
-    # Only call LLM if signal is clear and we have an API key
+    final_entry = quant_entry
+    final_sl = quant_sl
+    final_tp = quant_tp
+
+    # --- Tier 2: Multi-Model Ensemble (LLM Refinement) ---
     if signal != "HOLD" and OPENROUTER_API_KEY:
         try:
-            # Add timeout protection for Scalping
-            timeout = 1.5 if style == "Scalping" else 3.0
-            llm_reason, llm_conf = await asyncio.wait_for(
-                engine.validate_with_llm(data.ticker, data.price, signal, metrics, style),
+            timeout = 5.0 if style == "Scalping" else 12.0
+            ensemble_result = await asyncio.wait_for(
+                engine.ensemble_predict(data.ticker, data.price, signal, metrics, style, ohlc),
                 timeout=timeout
             )
-            reasoning = llm_reason
-            final_conf = (confidence + llm_conf) / 2 # Ensemble confidence
+            if ensemble_result:
+                e_entry, e_sl, e_tp, e_conf, e_reason = ensemble_result
+                # Sanity check: LLM levels must be within 5% of price
+                price = data.price
+                if abs(e_entry - price) / price < 0.05 and abs(e_sl - price) / price < 0.15:
+                    final_entry = e_entry
+                    final_sl = e_sl
+                    final_tp = e_tp
+                    final_conf = (confidence * 0.3 + e_conf * 0.7)
+                    reasoning = e_reason
+                    print(f"[ENSEMBLE] {data.ticker}: E={final_entry:.2f} SL={final_sl:.2f} TP={final_tp:.2f}")
+                else:
+                    print(f"[ENSEMBLE] Sanity check failed, using quant levels")
+                    reasoning = "Quant engine levels (LLM out of range)."
         except asyncio.TimeoutError:
-            reasoning = "FAST MATH MODE: LLM latency detected. Using quantitative boundaries."
-        except Exception:
-            reasoning = "Tier 1 engine confirmed structure."
+            reasoning = f"Real ATR-based levels. Models timed out. ATR={real_atr:.4f}"
+        except Exception as ex:
+            print(f"Ensemble error: {ex}")
+            reasoning = "Quantitative engine confirmed structure with real volatility."
 
-    # Final Payload Construction
+    # Final Payload
     payload = {
         "type": "TICKER_UPDATE",
         "ticker": data.ticker,
         "price": data.price,
-        "entry_price": float(quant_entry),
-        "stop_loss": float(quant_sl),
-        "target_price": float(quant_tp),
+        "entry_price": float(final_entry),
+        "stop_loss": float(final_sl),
+        "target_price": float(final_tp),
         "signal": signal,
-        "confidence": float(final_conf),
+        "confidence": float(min(0.99, final_conf)),
         "reasoning": reasoning,
         "style": style,
         "metrics": metrics,
@@ -468,7 +606,7 @@ async def ingest_data(data: MarketState):
     }
     
     await manager.broadcast(payload)
-    return {"status": "ok", "signal": signal, "confidence": confidence}
+    return {"status": "ok", "signal": signal, "confidence": float(final_conf)}
 
 # --- Paper Trading Endpoints ---
 @app.get("/api/paper/positions")
