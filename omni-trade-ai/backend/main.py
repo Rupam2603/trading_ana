@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import yfinance as yf
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from uuid import uuid4
 
 load_dotenv()
 
@@ -74,12 +75,30 @@ class MarketState(BaseModel):
     timestamp: float
     style: str = "Standard" # Scalping, Standard, Swing
 
+class PaperTrade(BaseModel):
+    id: str
+    ticker: str
+    direction: str # BUY / SELL
+    entry_price: float
+    stop_loss: float
+    target_price: float
+    quantity: float
+    status: str = "OPEN" # OPEN, CLOSED
+    entry_time: float
+    exit_time: Optional[float] = None
+    pnl: float = 0.0
+    source: str = "ai_strategy"
+
 class InferenceEngine:
     def __init__(self):
         self.model = OmniTradeTFT()
         self.model.eval()
         self.buffers: Dict[str, List[List[float]]] = {}
-        self.window_size = 15 # Reduced window for faster responsiveness
+        self.window_size = 15
+        self.active_positions: List[PaperTrade] = []
+        self.trade_history: List[PaperTrade] = []
+        self.balance = 100000.0 # Initial Paper Balance
+        self.signal_cache = {}
 
     async def validate_with_llm(self, ticker, price, signal, metrics, style):
         """Tier 2: LLM Analyst - Processes quant data and context to refine targets and reasoning."""
@@ -131,6 +150,62 @@ class InferenceEngine:
             print(f"LLM Error: {e}")
             
         return "Quant engine verified intraday structure.", 0.80
+
+    def execute_paper_trade(self, trade_data: dict):
+        trade_id = str(uuid4())[:8]
+        new_trade = PaperTrade(
+            id=trade_id,
+            ticker=trade_data['ticker'],
+            direction=trade_data['direction'],
+            entry_price=trade_data['entry'],
+            stop_loss=trade_data['sl'],
+            target_price=trade_data['tp'],
+            quantity=trade_data['quantity'],
+            entry_time=time.time(),
+            source=trade_data.get('source', 'ai_strategy')
+        )
+        self.active_positions.append(new_trade)
+        return new_trade
+
+    def process_matching_engine(self, ticker, current_price):
+        """Simulates real-world execution matching against live ticks."""
+        closed_trades = []
+        for trade in self.active_positions:
+            if trade.ticker != ticker: continue
+            
+            pnl = 0.0
+            triggered = False
+            
+            if trade.direction == "BUY":
+                if current_price <= trade.stop_loss: # SL Hit
+                    trade.status = "CLOSED"
+                    trade.exit_time = time.time()
+                    trade.pnl = (trade.stop_loss - trade.entry_price) * trade.quantity
+                    triggered = True
+                elif current_price >= trade.target_price: # TP Hit
+                    trade.status = "CLOSED"
+                    trade.exit_time = time.time()
+                    trade.pnl = (trade.target_price - trade.entry_price) * trade.quantity
+                    triggered = True
+            elif trade.direction == "SELL":
+                if current_price >= trade.stop_loss: # SL Hit
+                    trade.status = "CLOSED"
+                    trade.exit_time = time.time()
+                    trade.pnl = (trade.entry_price - trade.stop_loss) * trade.quantity
+                    triggered = True
+                elif current_price <= trade.target_price: # TP Hit
+                    trade.status = "CLOSED"
+                    trade.exit_time = time.time()
+                    trade.pnl = (trade.entry_price - trade.target_price) * trade.quantity
+                    triggered = True
+            
+            if triggered:
+                self.balance += trade.pnl
+                closed_trades.append(trade)
+                self.trade_history.append(trade)
+        
+        self.active_positions = [t for t in self.active_positions if t.status == "OPEN"]
+        return closed_trades
 
     def calculate_rsi(self, prices, period=14):
         if len(prices) < period + 1: return 50
@@ -250,6 +325,9 @@ class InferenceEngine:
             # Save results to a cache for the GET endpoint
             if not hasattr(self, 'signal_cache'): self.signal_cache = {}
             self.signal_cache[ticker] = (final_signal, final_conf, metrics)
+            
+            # --- Matching Engine Update ---
+            self.process_matching_engine(ticker, data.price)
             
             return final_signal, final_conf, metrics
         
@@ -391,6 +469,29 @@ async def ingest_data(data: MarketState):
     
     await manager.broadcast(payload)
     return {"status": "ok", "signal": signal, "confidence": confidence}
+
+# --- Paper Trading Endpoints ---
+@app.get("/api/paper/positions")
+async def get_paper_positions():
+    return {
+        "active": [t.dict() for t in engine.active_positions],
+        "history": [t.dict() for t in engine.trade_history[-10:]],
+        "balance": engine.balance
+    }
+
+@app.post("/api/paper/trade")
+async def place_paper_trade(trade_data: dict):
+    # Apply realistic slippage (1 tick / 0.01%)
+    trade_data['entry'] = trade_data['entry'] * (1.0001 if trade_data['direction'] == 'BUY' else 0.9999)
+    
+    trade = engine.execute_paper_trade(trade_data)
+    return {"status": "executed", "trade": trade.dict()}
+
+@app.post("/api/paper/reset")
+async def reset_paper_account():
+    engine.active_positions = []
+    engine.balance = 100000.0
+    return {"status": "reset", "balance": engine.balance}
 
 @app.get("/api/price/{ticker}")
 async def get_price(ticker: str, style: str = "Standard"):

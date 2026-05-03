@@ -106,6 +106,65 @@ const TechnicalAnalysis = memo(({ symbol, tradingMode }: { symbol: string, tradi
 
 TechnicalAnalysis.displayName = 'TechnicalAnalysis';
 
+const ActivePositionsPanel = ({ positions, balance, currentPrice }: { positions: any[], balance: number, currentPrice: number }) => {
+  return (
+    <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-4 backdrop-blur-md shadow-2xl">
+      <div className="flex items-center justify-between mb-4 pb-2 border-b border-zinc-800/50">
+        <div className="flex items-center gap-2">
+          <Activity size={16} className="text-purple-400" />
+          <h3 className="text-xs font-black uppercase tracking-widest text-zinc-300">Active Paper Positions</h3>
+        </div>
+        <div className="text-[10px] font-bold text-zinc-500">
+          ACCOUNT_BALANCE: <span className="text-emerald-400">${balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+        </div>
+      </div>
+      
+      <div className="space-y-2 max-h-60 overflow-y-auto pr-1 scrollbar-hide">
+        {positions.length === 0 ? (
+          <div className="py-8 text-center text-[10px] text-zinc-600 italic">No active trades. Apply an AI Strategy to execute.</div>
+        ) : (
+          positions.map(trade => {
+            const pnl = trade.direction === 'BUY' 
+              ? (currentPrice - trade.entry_price) * trade.quantity
+              : (trade.entry_price - currentPrice) * trade.quantity;
+            const pnlPercent = (pnl / (trade.entry_price * trade.quantity)) * 100;
+            
+            return (
+              <div key={trade.id} className="flex items-center justify-between p-3 rounded-lg bg-black/40 border border-zinc-800/50 group hover:border-purple-500/30 transition-all">
+                <div className="flex items-center gap-4">
+                  <div className={`px-2 py-0.5 rounded text-[8px] font-black ${trade.direction === 'BUY' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-rose-500/20 text-rose-500'}`}>
+                    {trade.direction}
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-bold text-zinc-300">{trade.ticker}</span>
+                    <span className="text-[8px] text-zinc-600 font-mono">@ {trade.entry_price.toFixed(2)}</span>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-6">
+                  <div className="hidden md:flex flex-col items-end">
+                    <span className="text-[8px] text-zinc-600 uppercase font-bold">SL / TP</span>
+                    <span className="text-[9px] font-mono text-zinc-400">{trade.stop_loss.toFixed(2)} / {trade.target_price.toFixed(2)}</span>
+                  </div>
+                  
+                  <div className="flex flex-col items-end min-w-[80px]">
+                    <span className={`text-[11px] font-black tabular-nums ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                    </span>
+                    <span className={`text-[8px] font-bold ${pnl >= 0 ? 'text-emerald-500/60' : 'text-rose-500/60'}`}>
+                      {pnl >= 0 ? '▲' : '▼'} {Math.abs(pnlPercent).toFixed(2)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+};
+
 const Dashboard = () => {
   const { isSignedIn, isLoaded } = { isSignedIn: true, isLoaded: true };
   const { theme } = useTheme();
@@ -153,6 +212,12 @@ const Dashboard = () => {
     theme: 'dark',
     refreshRate: 5000
   });
+
+  // --- Paper Trading State ---
+  const [simulateTradeOnApply, setSimulateTradeOnApply] = useState(false);
+  const [paperPositions, setPaperPositions] = useState<any[]>([]);
+  const [paperBalance, setPaperBalance] = useState(100000);
+  const [isExecuting, setIsExecuting] = useState(false);
 
   const handleAddMarker = useCallback((marker: any) => {
     setMarkers(prev => {
@@ -357,6 +422,68 @@ const Dashboard = () => {
       clearTimeout(wsReconnectTimeout);
     };
   }, [selectedTicker]);
+
+  // --- Paper Trading Sync ---
+  const fetchPaperPositions = useCallback(async () => {
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${window.location.hostname}:8000`;
+      const res = await fetch(`${apiUrl}/api/paper/positions`);
+      if (res.ok) {
+        const data = await res.json();
+        setPaperPositions(data.active);
+        setPaperBalance(data.balance);
+      }
+    } catch (e) {
+      console.error("Paper sync error:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPaperPositions();
+    const interval = setInterval(fetchPaperPositions, 5000);
+    return () => clearInterval(interval);
+  }, [fetchPaperPositions]);
+
+  const handleExecutePaperTrade = async () => {
+    if (isExecuting) return;
+    setIsExecuting(true);
+    
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${window.location.hostname}:8000`;
+      
+      // Calculate Quantity (Risk 1% of balance)
+      const riskAmount = paperBalance * 0.01;
+      const slDistance = Math.abs(liveData.entry_price - liveData.stop_loss);
+      const quantity = slDistance > 0 ? riskAmount / slDistance : 1;
+
+      const tradePayload = {
+        ticker: selectedTicker,
+        direction: liveData.signal,
+        entry: liveData.entry_price,
+        sl: liveData.stop_loss,
+        tp: liveData.target_price,
+        quantity: parseFloat(quantity.toFixed(4)),
+        source: "ai_strategy"
+      };
+
+      const res = await fetch(`${apiUrl}/api/paper/trade`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tradePayload)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        addLog(`PAPER_TRADE_EXECUTED: ${data.trade.direction} ${data.trade.ticker} @ ${data.trade.entry_price.toFixed(2)}`);
+        addNotification("Trade Executed", `Simulated ${data.trade.direction} order filled for ${data.trade.ticker}`, "success");
+        fetchPaperPositions();
+      }
+    } catch (e) {
+      addNotification("Execution Failed", "Could not submit paper trade to engine.", "error");
+    } finally {
+      setTimeout(() => setIsExecuting(false), 2000); // Debounce
+    }
+  };
 
   useEffect(() => {
     let mockInterval: NodeJS.Timeout;
@@ -938,29 +1065,51 @@ const Dashboard = () => {
                     </div>
 
                     {liveData.signal !== 'HOLD' && (
-                      <button 
-                        onClick={() => {
-                          // Dispatch custom event to sync with charts
-                          const event = new CustomEvent('apply-ai-strategy', { 
-                            detail: {
-                              ticker: selectedTicker,
-                              direction: liveData.signal,
-                              entry: liveData.entry_price,
-                              sl: liveData.stop_loss,
-                              tp: liveData.target_price,
-                              timestamp: Date.now() / 1000
-                            } 
-                          });
-                          window.dispatchEvent(event);
-                          
-                          addLog(`Visual strategy applied to chart for ${selectedTicker}`);
-                          addNotification("Strategy Plotted", `Visual ${liveData.signal} tool rendered on chart at ${liveData.entry_price.toFixed(2)}`, "success");
-                        }}
-                        className="w-full py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black uppercase tracking-tighter transition-all active:scale-95 shadow-[0_0_20px_rgba(79,70,229,0.3)] flex items-center justify-center gap-2"
-                      >
-                        <Layers size={14} />
-                        Apply AI Strategy
-                      </button>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between px-1">
+                          <span className="text-[10px] text-zinc-500 font-bold uppercase">Simulate Trade on Apply</span>
+                          <button 
+                            onClick={() => setSimulateTradeOnApply(!simulateTradeOnApply)}
+                            className={`w-8 h-4 rounded-full relative transition-colors ${simulateTradeOnApply ? 'bg-purple-600' : 'bg-zinc-800'}`}
+                          >
+                            <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${simulateTradeOnApply ? 'left-[18px]' : 'left-0.5'}`} />
+                          </button>
+                        </div>
+                        
+                        <button 
+                          disabled={isExecuting}
+                          onClick={() => {
+                            // Dispatch custom event to sync with charts
+                            const event = new CustomEvent('apply-ai-strategy', { 
+                              detail: {
+                                ticker: selectedTicker,
+                                direction: liveData.signal,
+                                entry: liveData.entry_price,
+                                sl: liveData.stop_loss,
+                                tp: liveData.target_price,
+                                timestamp: Date.now() / 1000
+                              } 
+                            });
+                            window.dispatchEvent(event);
+                            
+                            addLog(`Visual strategy applied to chart for ${selectedTicker}`);
+                            
+                            if (simulateTradeOnApply) {
+                              handleExecutePaperTrade();
+                            } else {
+                              addNotification("Strategy Plotted", `Visual ${liveData.signal} tool rendered on chart`, "success");
+                            }
+                          }}
+                          className={`w-full py-3 rounded-lg text-white text-xs font-black uppercase tracking-tighter transition-all active:scale-95 flex items-center justify-center gap-2 ${
+                            simulateTradeOnApply 
+                              ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-[0_0_25px_rgba(147,51,234,0.4)]' 
+                              : 'bg-indigo-600 hover:bg-indigo-500 shadow-[0_0_20px_rgba(79,70,229,0.3)]'
+                          } ${isExecuting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {isExecuting ? <Activity size={14} className="animate-spin" /> : <Layers size={14} />}
+                          {simulateTradeOnApply ? 'Execute AI Paper Trade' : 'Apply AI Strategy'}
+                        </button>
+                      </div>
                     )}
                     
                     <div className="pt-2 flex items-center justify-between opacity-50">
@@ -1013,6 +1162,13 @@ const Dashboard = () => {
               )}
             </div>
           </div>
+
+          {/* Active Positions & Paper Trading Stats */}
+          <ActivePositionsPanel 
+            positions={paperPositions} 
+            balance={paperBalance} 
+            currentPrice={liveData.price} 
+          />
 
           {/* Technical Analysis (Mobile/Tablet Only) */}
           {isMobile && (
