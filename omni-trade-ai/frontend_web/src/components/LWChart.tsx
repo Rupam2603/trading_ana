@@ -58,6 +58,7 @@ export function LWChart({ symbol, height, timeframe, liveData, onSymbolChange }:
   const candleSeries = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lastCandleRef = useRef<CandlestickData | null>(null);
   const [candleOpenPrice, setCandleOpenPrice] = useState<number>(0);
+  const priceLinesRef = useRef<any[]>([]);
 
   const isDark = theme === "dark";
   const BG   = isDark ? "#131722" : "#ffffff";
@@ -230,15 +231,74 @@ export function LWChart({ symbol, height, timeframe, liveData, onSymbolChange }:
         size: 2,
       }];
       // Use optional chaining or check for existence
-      if (typeof cs.setMarkers === 'function') {
-        cs.setMarkers(markers);
+      const csAny = cs as any;
+      if (typeof csAny.setMarkers === 'function') {
+        csAny.setMarkers(markers);
       }
     } else {
-      if (typeof cs.setMarkers === 'function') {
-        cs.setMarkers([]);
+      const csAny = cs as any;
+      if (typeof csAny.setMarkers === 'function') {
+        csAny.setMarkers([]);
       }
     }
   }, [liveData, timeframe, candleOpenPrice]);
+  
+  // --- Visual Strategy Application ---
+  useEffect(() => {
+    const handleApplyStrategy = (e: any) => {
+      const { direction, entry, sl, tp, ticker } = e.detail;
+      
+      // Safety check: ensure chart matches ticker
+      if (symbol.indexOf(ticker) === -1 && ticker.indexOf(symbol) === -1) {
+        return;
+      }
+
+      const cs = candleSeries.current;
+      if (!cs) return;
+
+      // 1. Clear old lines
+      priceLinesRef.current.forEach(line => cs.removePriceLine(line));
+      priceLinesRef.current = [];
+
+      // 2. Create new lines
+      const entryLine = cs.createPriceLine({
+        price: entry,
+        color: '#2196F3',
+        lineWidth: 2,
+        lineStyle: 0, // Solid
+        axisLabelVisible: true,
+        title: 'AI ENTRY',
+      });
+
+      const slLine = cs.createPriceLine({
+        price: sl,
+        color: '#ef5350',
+        lineWidth: 2,
+        lineStyle: 2, // Dashed
+        axisLabelVisible: true,
+        title: 'SAFE EXIT (SL)',
+      });
+
+      const tpLine = cs.createPriceLine({
+        price: tp,
+        color: '#26a69a',
+        lineWidth: 2,
+        lineStyle: 2, // Dashed
+        axisLabelVisible: true,
+        title: 'PROFIT TARGET (TP)',
+      });
+
+      priceLinesRef.current = [entryLine, slLine, tpLine];
+
+      // 3. Auto-panning
+      if (chartApi.current) {
+        chartApi.current.timeScale().scrollToPosition(0, true);
+      }
+    };
+
+    window.addEventListener('apply-ai-strategy', handleApplyStrategy);
+    return () => window.removeEventListener('apply-ai-strategy', handleApplyStrategy);
+  }, [symbol]);
 
 
   return (

@@ -272,7 +272,7 @@ const Dashboard = () => {
                 data.target_price = tfData.target_price;
               }
               // Update live data with real prices from backend
-              setLiveData(prev => ({
+              setLiveData((prev: any) => ({
                 ...data,
                 price: data.price || prev.price,
                 ticker: selectedTicker,
@@ -329,7 +329,7 @@ const Dashboard = () => {
             mockIntervalRef.current = null;
           }
           
-          setLiveData(prev => ({
+          setLiveData((prev: any) => ({
             ...prev,
             ...data, // Map all fields returned by the updated API (signal, entry_price, etc.)
             price: data.price,
@@ -370,6 +370,7 @@ const Dashboard = () => {
       let currentPrice = basePrices[selectedTicker] || 100.00;
       let ticksSinceLastSignal = 0;
       let activeSignal: any = null;
+      const ratioMultiplier = 2.0;
       
       // Seed initial data immediately
       setLiveData({
@@ -939,8 +940,21 @@ const Dashboard = () => {
                     {liveData.signal !== 'HOLD' && (
                       <button 
                         onClick={() => {
-                          addLog(`AI parameters applied to trade ticket for ${selectedTicker}`);
-                          addNotification("Strategy Applied", "AI-optimized SL and TP coordinates transferred to trade ticket.", "success");
+                          // Dispatch custom event to sync with charts
+                          const event = new CustomEvent('apply-ai-strategy', { 
+                            detail: {
+                              ticker: selectedTicker,
+                              direction: liveData.signal,
+                              entry: liveData.entry_price,
+                              sl: liveData.stop_loss,
+                              tp: liveData.target_price,
+                              timestamp: Date.now() / 1000
+                            } 
+                          });
+                          window.dispatchEvent(event);
+                          
+                          addLog(`Visual strategy applied to chart for ${selectedTicker}`);
+                          addNotification("Strategy Plotted", `Visual ${liveData.signal} tool rendered on chart at ${liveData.entry_price.toFixed(2)}`, "success");
                         }}
                         className="w-full py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black uppercase tracking-tighter transition-all active:scale-95 shadow-[0_0_20px_rgba(79,70,229,0.3)] flex items-center justify-center gap-2"
                       >

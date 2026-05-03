@@ -33,6 +33,62 @@ function TVAdvancedChart({ symbol, timeframe, height, liveData }: Props) {
   const widgetRef = useRef<any>(null);
 
   useEffect(() => {
+    const handleApplyStrategy = (e: any) => {
+      const { direction, entry, sl, tp, ticker } = e.detail;
+      
+      // Safety check: ensure chart matches ticker
+      if (symbol.indexOf(ticker) === -1 && ticker.indexOf(symbol) === -1) {
+        console.warn(`Chart ticker mismatch: ${symbol} vs ${ticker}`);
+        return;
+      }
+
+      if (widgetRef.current) {
+        widgetRef.current.onChartReady(() => {
+          const chart = widgetRef.current.chart();
+          
+          // 1. Remove previous AI shapes to prevent clutter
+          try {
+            const allShapes = chart.getAllShapes();
+            allShapes.forEach((s: any) => {
+              if (s.name === 'long_position' || s.name === 'short_position') {
+                chart.removeEntity(s.id);
+              }
+            });
+          } catch (err) {
+            console.error("Error clearing shapes:", err);
+          }
+
+          // 2. Create new Position Tool
+          const shapeType = direction === 'BUY' ? 'long_position' : 'short_position';
+          
+          chart.createMultipointShape(
+            [{ price: entry }], // The anchor point (usually just Entry)
+            {
+              shape: shapeType,
+              lock: false,
+              disableSelection: false,
+              disableSave: false,
+              disableUndo: false,
+              overrides: {
+                stopLevel: Math.abs(entry - sl),
+                profitLevel: Math.abs(tp - entry),
+                // Adjust colors based on theme if supported by widget overrides
+                linecolor: direction === 'BUY' ? '#2196F3' : '#FF9800',
+              }
+            }
+          );
+
+          // 3. Auto-panning / Visibility
+          chart.executeActionById("chartProperties"); // Optional: focus user attention
+        });
+      }
+    };
+
+    window.addEventListener('apply-ai-strategy', handleApplyStrategy);
+    return () => window.removeEventListener('apply-ai-strategy', handleApplyStrategy);
+  }, [symbol]);
+
+  useEffect(() => {
     if (!containerRef.current) return;
 
     // Clean up previous widget
