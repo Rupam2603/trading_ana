@@ -19,6 +19,7 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { RatioSelector } from '@/components/RatioSelector';
 import { AssetSearch, ASSET_CATALOGUE } from '@/components/AssetSearch';
 import { TVChart } from '@/components/TVChart';
+import { LWChart } from '@/components/LWChart';
 import { useTheme } from '@/app/providers';
 
 
@@ -114,6 +115,7 @@ const Dashboard = () => {
   const [timeframe, setTimeframe] = useState("1");
   const [ratioMultiplier, setRatioMultiplier] = useState(2.5);
   const timeframeRef = useRef(timeframe);
+  const mockIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     timeframeRef.current = timeframe;
@@ -249,7 +251,8 @@ const Dashboard = () => {
     let wsReconnectTimeout: NodeJS.Timeout;
     let ws: WebSocket | null = null;
     let wsConnected = false;
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/signals";
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL?.replace('localhost', host) || `ws://${host}:8000/ws/signals`;
     
     const connectWebSocket = () => {
       try {
@@ -313,28 +316,21 @@ const Dashboard = () => {
     
     const fetchDirectPrice = async () => {
       try {
-        // Map internal ticker back to yfinance ticker
-        const yfTickerMap: Record<string, string> = {
-          "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD",
-          "TSLA": "TSLA", "NVDA": "NVDA", "AAPL": "AAPL", "MSFT": "MSFT", "AMZN": "AMZN",
-          "XAUUSD": "GC=F", "SILVER": "SI=F", "USOIL": "CL=F",
-          "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "JPY=X",
-          "SPX": "^GSPC", "IXIC": "^IXIC", "DJI": "^DJI",
-          "NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK"
-        };
-        
-        const yfTicker = yfTickerMap[selectedTicker];
-        if (!yfTicker) return;
-        
-        const response = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${yfTicker}?interval=1m&range=1d`);
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${host}:8000`;
+        const response = await fetch(`${apiUrl}/api/price/${selectedTicker}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const result = await response.json();
-        const price = result.chart.result[0].meta.regularMarketPrice;
+        const data = await response.json();
         
-        if (price) {
+        if (data && data.price) {
+          // If we get real data, disable mock data to prevent flickering
+          if (mockIntervalRef.current) {
+            clearInterval(mockIntervalRef.current);
+            mockIntervalRef.current = null;
+          }
+          
           setLiveData(prev => ({
             ...prev,
-            price: price,
+            price: data.price,
             ticker: selectedTicker
           }));
         }
@@ -358,8 +354,10 @@ const Dashboard = () => {
       clearInterval(priceInterval);
       clearTimeout(wsReconnectTimeout);
     };
-  }, [selectedTicker])
-    
+  }, [selectedTicker]);
+
+  useEffect(() => {
+    let mockInterval: NodeJS.Timeout;
     function startMockData() {
       const basePrices: Record<string, number> = {
         "BTCUSD": 64200.50, "ETHUSD": 3450.25, "SOLUSD": 145.20,
@@ -384,7 +382,7 @@ const Dashboard = () => {
         reasoning: "Awaiting high-probability setup. Models are currently observing market consolidation."
       });
       
-      mockInterval = setInterval(() => {
+      mockIntervalRef.current = setInterval(() => {
         const volatility = currentPrice * 0.0015;
         currentPrice += (Math.random() - 0.5) * volatility;
         ticksSinceLastSignal++;
@@ -433,9 +431,18 @@ const Dashboard = () => {
         
       }, 2500);
     }
+
+    // You can choose to start mock data here if you want it to run always or conditionally
+    // For now, I'll keep it commented out to avoid fighting with the real WebSocket data
+    // if (process.env.NEXT_PUBLIC_WS_URL === "mock") startMockData();
     
-    return () => clearInterval(mockInterval);
-  }, [selectedTicker]);
+    return () => {
+      if (mockIntervalRef.current) {
+        clearInterval(mockIntervalRef.current);
+        mockIntervalRef.current = null;
+      }
+    };
+  }, [selectedTicker, ratioMultiplier]);
 
   const getAtrLevel = (atr: number, price: number) => {
     const rel = (atr / price) * 1000;
@@ -679,7 +686,7 @@ const Dashboard = () => {
               </div>
             </div>
             <div className="text-sm md:text-base font-medium text-zinc-200 italic leading-relaxed">
-              "{liveData.reasoning}"
+              &quot;{liveData.reasoning}&quot;
             </div>
           </div>
 
@@ -830,7 +837,7 @@ const Dashboard = () => {
               }}
             >
               <TVChart
-                symbol={selectedTvSymbol}
+                symbol={TV_SYMBOL_MAP[selectedTicker] || selectedTicker}
                 timeframe={timeframe}
                 height={isMobile ? 500 : chartHeight}
                 liveData={liveData}

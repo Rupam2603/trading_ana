@@ -78,7 +78,7 @@ class InferenceEngine:
         self.model = OmniTradeTFT()
         self.model.eval()
         self.buffers: Dict[str, List[List[float]]] = {}
-        self.window_size = 30 # Production window size
+        self.window_size = 15 # Reduced window for faster responsiveness
 
     async def validate_with_claude(self, ticker, price, signal, metrics):
         if not OPENROUTER_API_KEY:
@@ -202,46 +202,44 @@ class InferenceEngine:
             
             trend = "UP" if ema_fast > ema_mid and data.price > kernel_price else "DOWN"
             
-            # 3. Hybrid Synthesis
+            # 3. Hybrid Synthesis (Neural + Technical)
             final_signal = "HOLD"
-            final_conf = 0.5
+            final_conf = 0.4
             
-            if nn_signal == "BUY":
-                if trend == "UP" and rsi < 65:
+            # Combine Neural Bias with Technical Evidence
+            if nn_signal == "BUY" or (rsi < 30 and trend == "UP"):
+                if trend == "UP" or rsi < 25:
                     final_signal = "BUY"
-                    final_conf = 0.78 + (torch.rand(1).item() * 0.1)
-                    if fvg == "BULLISH": final_conf += 0.05
-                elif rsi < 25: 
-                    final_signal = "BUY"
-                    final_conf = 0.82 + (torch.rand(1).item() * 0.08)
+                    final_conf = 0.72 + (torch.rand(1).item() * 0.15)
+                    if fvg == "BULLISH": final_conf += 0.08
             
-            elif nn_signal == "SELL":
-                if trend == "DOWN" and rsi > 35:
+            elif nn_signal == "SELL" or (rsi > 70 and trend == "DOWN"):
+                if trend == "DOWN" or rsi > 75:
                     final_signal = "SELL"
-                    final_conf = 0.77 + (torch.rand(1).item() * 0.11)
-                    if fvg == "BEARISH": final_conf += 0.05
-                elif rsi > 75:
-                    final_signal = "SELL"
-                    final_conf = 0.81 + (torch.rand(1).item() * 0.09)
+                    final_conf = 0.71 + (torch.rand(1).item() * 0.16)
+                    if fvg == "BEARISH": final_conf += 0.08
+            
+            # Confidence Cap
+            final_conf = min(0.99, final_conf)
             
             return final_signal, final_conf, metrics
         
-        return "HOLD", 0.48 + (torch.rand(1).item() * 0.04), metrics
-
-@contextlib.asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup: Start the background scraper
-    scraper_task = asyncio.create_task(scraper.run_forever())
-    yield
-    # Shutdown: Clean up resources
-    scraper_task.cancel()
-    try:
-        await scraper_task
-    except asyncio.CancelledError:
-        pass
+        # Default state: returning metrics but HOLD signal
+        return "HOLD", 0.0, metrics
 
 # --- FastAPI Implementation ---
-app = FastAPI(title="OmniTrade AI Production Backend", lifespan=lifespan)
+app = FastAPI(title="OmniTrade AI Production Backend")
+
+@app.on_event("startup")
+async def startup_event():
+    print("FastAPI startup event triggered")
+    app.state.scraper_task = asyncio.create_task(scraper.run_forever())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("FastAPI shutdown event triggered")
+    if hasattr(app.state, 'scraper_task'):
+        app.state.scraper_task.cancel()
 
 app.add_middleware(
     CORSMiddleware,
@@ -266,6 +264,8 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
+        # Log broadcast for debugging
+        print(f"Broadcasting update for {message.get('ticker')} | Price: {message.get('price')}")
         for connection in list(self.active_connections):
             try:
                 await connection.send_text(json.dumps(message))
@@ -320,17 +320,20 @@ async def ingest_data(data: MarketState):
         if signal == "BUY":
             tf_sl = data.price * (1 - tf_risk)
             tf_tp = data.price * (1 + tf_risk * 2.5)
+            tf_entry = data.price
         elif signal == "SELL":
             tf_sl = data.price * (1 + tf_risk)
             tf_tp = data.price * (1 - tf_risk * 2.5)
+            tf_entry = data.price
         else:
-            tf_sl = data.price * (1 - (tf_risk * 1.5))
-            tf_tp = data.price * (1 + (tf_risk * 3.0))
+            tf_sl = 0.0
+            tf_tp = 0.0
+            tf_entry = 0.0
             
         tf_predictions[tf_key] = {
             "signal": signal,
             "confidence": float(confidence),
-            "entry_price": float(data.price),
+            "entry_price": float(tf_entry),
             "stop_loss": float(tf_sl),
             "target_price": float(tf_tp)
         }
@@ -357,6 +360,52 @@ async def ingest_data(data: MarketState):
     
     await manager.broadcast(payload)
     return {"status": "ok", "signal": signal, "confidence": confidence}
+
+@app.get("/api/price/{ticker}")
+async def get_price(ticker: str):
+    """
+    Get the latest price for a given ticker from the scraper's cache or yfinance.
+    """
+    if ticker in engine.buffers and engine.buffers[ticker]:
+        last_tick = engine.buffers[ticker][-1]
+        return {
+            "ticker": ticker,
+            "price": last_tick[0],
+            "volume": last_tick[1],
+            "sentiment": last_tick[2],
+            "timestamp": last_tick[3]
+        }
+    
+    # Fallback to direct fetch (run in thread to avoid blocking async loop)
+    try:
+        import yfinance as yf
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=5)
+        
+        # yfinance uses - instead of nothing for USD pairs
+        yf_ticker = ticker
+        if "USD" in ticker and "-" not in ticker:
+            yf_ticker = f"{ticker[:-3]}-{ticker[-3:]}"
+            
+        def fetch_yf():
+            return yf.Ticker(yf_ticker).history(period="1d", interval="1m")
+            
+        data = await loop.run_in_executor(executor, fetch_yf)
+        
+        if not data.empty:
+            price = float(data['Close'].iloc[-1])
+            return {
+                "ticker": ticker,
+                "price": price,
+                "source": "direct"
+            }
+    except Exception as e:
+        print(f"Direct fetch error for {ticker}: {e}")
+        
+    return {"error": "Ticker not found or no data yet"}
 
 # --- Unified Background Scraper ---
 class OmniDataScraper:
@@ -399,24 +448,30 @@ class OmniDataScraper:
                     await asyncio.sleep(60)
 
     async def run_forever(self):
+        print("Starting OmniDataScraper...")
         sentiment_task = asyncio.create_task(self.update_sentiment_loop())
         while True:
             try:
+                print(f"Fetching market data for {len(TICKER_MAP)} tickers...")
                 tasks = [self.get_market_data(yf_id) for yf_id in TICKER_MAP.keys()]
                 results = await asyncio.gather(*tasks)
                 
+                valid_results = 0
                 for (yf_id, internal_id), data in zip(TICKER_MAP.items(), results):
                     if data:
+                        valid_results += 1
                         tick = MarketState(
                             ticker=internal_id, price=data["price"], volume=data["volume"],
                             sentiment=self.current_sentiment, reasoning=self.current_reasoning, timestamp=time.time()
                         )
                         await ingest_data(tick)
+                print(f"Scraper cycle complete. {valid_results} ticks ingested.")
                 await asyncio.sleep(2) # Real-time fast cooldown
             except asyncio.CancelledError:
                 sentiment_task.cancel()
                 break
-            except Exception:
+            except Exception as e:
+                print(f"Scraper error: {e}")
                 await asyncio.sleep(5) # Backoff on error
 
 scraper = OmniDataScraper()

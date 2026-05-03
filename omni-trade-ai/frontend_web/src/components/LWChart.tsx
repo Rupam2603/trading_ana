@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTheme } from "@/app/providers";
 import {
   createChart,
   ColorType,
   CrosshairMode,
   CandlestickSeries,
-  createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
@@ -26,6 +25,7 @@ interface Props {
     stop_loss: number;
     target_price: number;
   };
+  onSymbolChange?: (newSymbol: string) => void;
 }
 
 const TF_MINUTES: Record<string, number> = {
@@ -49,19 +49,30 @@ function generateCandles(basePrice: number, count: number, intervalMin: number):
   return candles;
 }
 
-export function LWChart({ symbol, height, timeframe, liveData }: Props) {
+export function LWChart({ symbol, height, timeframe, liveData, onSymbolChange }: Props) {
   const { theme } = useTheme();
+  const [isEditingSymbol, setIsEditingSymbol] = useState(false);
+  const [tempSymbol, setTempSymbol] = useState(symbol);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
   const candleSeries = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lastCandleRef = useRef<CandlestickData | null>(null);
+  const [candleOpenPrice, setCandleOpenPrice] = useState<number>(0);
 
   const isDark = theme === "dark";
-  const BG   = isDark ? "#0B0E14" : "#F4F6FB";
-  const GRID = isDark ? "#252D3D" : "#D8DCF0";
-  const TEXT = isDark ? "#9BA1C6" : "#5D6494";
-  const BULL = "#2196F3";
-  const BEAR = "#FF9800";
-  const CYAN = "#00E5FF";
+  const BG   = isDark ? "#131722" : "#ffffff";
+  const GRID = isDark ? "rgba(42, 46, 57, 0.5)" : "rgba(240, 243, 250, 0.5)";
+  const TEXT = isDark ? "#d1d4dc" : "#131722";
+  const BULL = "#26a69a";
+  const BEAR = "#ef5350";
+
+  const handleSymbolSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (tempSymbol && tempSymbol !== symbol && onSymbolChange) {
+      onSymbolChange(tempSymbol.toUpperCase());
+    }
+    setIsEditingSymbol(false);
+  };
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -70,11 +81,43 @@ export function LWChart({ symbol, height, timeframe, liveData }: Props) {
     const chart = createChart(chartRef.current, {
       width: chartRef.current.clientWidth,
       height,
-      layout: { background: { type: ColorType.Solid, color: BG }, textColor: TEXT },
-      grid: { vertLines: { color: GRID }, horzLines: { color: GRID } },
-      crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: GRID },
-      timeScale: { borderColor: GRID, timeVisible: true, secondsVisible: false },
+      layout: {
+        background: { type: ColorType.Solid, color: BG },
+        textColor: TEXT,
+        fontSize: 12,
+        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      },
+      grid: {
+        vertLines: { color: GRID, style: 2 },
+        horzLines: { color: GRID, style: 2 },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: isDark ? "#758696" : "#9598a1",
+          width: 1,
+          style: 1,
+          labelBackgroundColor: isDark ? "#4c525e" : "#131722",
+        },
+        horzLine: {
+          color: isDark ? "#758696" : "#9598a1",
+          width: 1,
+          style: 1,
+          labelBackgroundColor: isDark ? "#4c525e" : "#131722",
+        },
+      },
+      rightPriceScale: {
+        borderColor: GRID,
+        autoScale: true,
+      },
+      timeScale: {
+        borderColor: GRID,
+        timeVisible: true,
+        secondsVisible: false,
+        barSpacing: 10,
+      },
+      handleScroll: true,
+      handleScale: true,
     });
 
     const cs = chart.addSeries(CandlestickSeries, {
@@ -84,17 +127,29 @@ export function LWChart({ symbol, height, timeframe, liveData }: Props) {
       borderDownColor: BEAR,
       wickUpColor: BULL,
       wickDownColor: BEAR,
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceLineColor: isDark ? "#758696" : "#131722",
     });
 
     const basePrice = liveData.price || 100;
     const intervalMin = TF_MINUTES[timeframe] ?? 1;
-    cs.setData(generateCandles(basePrice, 120, intervalMin));
+    
+    // Instead of random, let's just start with some history based on the current price
+    // to make the chart look active, but consistent.
+    const initialCandles = generateCandles(basePrice, 120, intervalMin);
+    cs.setData(initialCandles);
+    const last = initialCandles[initialCandles.length - 1];
+    lastCandleRef.current = last;
+    setCandleOpenPrice(last.open);
 
     chartApi.current = chart;
     candleSeries.current = cs;
 
     const ro = new ResizeObserver(() => {
-      chart.resize(chartRef.current!.clientWidth, height);
+      if (chartRef.current) {
+        chart.resize(chartRef.current.clientWidth, height);
+      }
     });
     ro.observe(chartRef.current);
 
@@ -105,41 +160,134 @@ export function LWChart({ symbol, height, timeframe, liveData }: Props) {
       candleSeries.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, timeframe, theme]);
+  }, [symbol, timeframe, theme, height]);
 
   useEffect(() => {
     const cs = candleSeries.current;
     if (!cs || !liveData.price) return;
 
-    const now = Math.floor(Date.now() / 1000) as Time;
-    cs.update({
-      time: now,
-      open: liveData.entry_price || liveData.price,
-      high: Math.max(liveData.price, liveData.entry_price || liveData.price),
-      low: Math.min(liveData.price, liveData.stop_loss || liveData.price * 0.99),
-      close: liveData.price,
-    });
+    // Handle first real price arrival to re-seed history if it was based on default 100
+    if (liveData.price > 1 && lastCandleRef.current && Math.abs(lastCandleRef.current.close - liveData.price) > liveData.price * 0.5) {
+      const intervalMin = TF_MINUTES[timeframe] ?? 1;
+      const initialCandles = generateCandles(liveData.price, 120, intervalMin);
+      cs.setData(initialCandles);
+      const last = initialCandles[initialCandles.length - 1];
+      lastCandleRef.current = last;
+      setCandleOpenPrice(last.open);
+      return;
+    }
 
+    const intervalMin = TF_MINUTES[timeframe] ?? 1;
+    const intervalSeconds = intervalMin * 60;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const candleTime = (Math.floor(nowSeconds / intervalSeconds) * intervalSeconds) as Time;
+
+    // Use current price for all fields if it's a new candle
+    let newCandle: CandlestickData;
+    const lastTime = lastCandleRef.current ? (typeof lastCandleRef.current.time === 'number' ? lastCandleRef.current.time : 0) : 0;
+    
+    if (lastCandleRef.current && lastTime === Number(candleTime)) {
+      // Update existing candle
+      newCandle = {
+        ...lastCandleRef.current,
+        high: Math.max(lastCandleRef.current.high, liveData.price),
+        low: Math.min(lastCandleRef.current.low, liveData.price),
+        close: liveData.price,
+      };
+    } else if (Number(candleTime) > lastTime) {
+      // New candle (only if time is strictly greater)
+      newCandle = {
+        time: candleTime,
+        open: liveData.price,
+        high: liveData.price,
+        low: liveData.price,
+        close: liveData.price,
+      };
+    } else {
+      // Don't update if time is in the past
+      return;
+    }
+
+    try {
+      cs.update(newCandle);
+      lastCandleRef.current = newCandle;
+      if (newCandle.open !== candleOpenPrice) {
+        setCandleOpenPrice(newCandle.open);
+      }
+    } catch (e) {
+      console.error("Chart update error:", e);
+    }
+
+    // --- Dynamic Markers ---
     if (liveData.signal !== "HOLD" && liveData.entry_price > 0) {
-      cs.createPriceLine({ price: liveData.entry_price, color: CYAN, lineWidth: 1, lineStyle: 2, title: "Entry" });
-      cs.createPriceLine({ price: liveData.stop_loss,   color: BEAR, lineWidth: 1, lineStyle: 2, title: "SL" });
-      cs.createPriceLine({ price: liveData.target_price, color: CYAN, lineWidth: 1, lineStyle: 2, title: "TP" });
-
+      const now = Math.floor(Date.now() / 1000) as Time;
       const markers: SeriesMarker<Time>[] = [{
         time: now,
         position: liveData.signal === "BUY" ? "belowBar" : "aboveBar",
         color: liveData.signal === "BUY" ? BULL : BEAR,
         shape: liveData.signal === "BUY" ? "arrowUp" : "arrowDown",
-        text: liveData.signal,
+        text: `${liveData.signal}`,
         size: 2,
       }];
-      createSeriesMarkers(cs, markers);
+      // Use optional chaining or check for existence
+      if (typeof cs.setMarkers === 'function') {
+        cs.setMarkers(markers);
+      }
+    } else {
+      if (typeof cs.setMarkers === 'function') {
+        cs.setMarkers([]);
+      }
     }
-  }, [liveData]);
+  }, [liveData, timeframe, candleOpenPrice]);
+
 
   return (
-    <div className="lw-chart-container" style={{ height }}>
+    <div className="lw-chart-container" style={{ height, position: "relative" }}>
+      <div 
+        className="absolute top-4 left-4 z-10 flex flex-col gap-1 p-2 rounded bg-black/40 backdrop-blur-md border border-white/10"
+        style={{ pointerEvents: "auto" }}
+      >
+        <div className="flex items-center gap-2">
+          {isEditingSymbol ? (
+            <form onSubmit={handleSymbolSubmit}>
+              <input
+                autoFocus
+                type="text"
+                className="bg-gray-800 text-xs text-white border border-blue-500 rounded px-1 w-20 outline-none"
+                value={tempSymbol}
+                onChange={(e) => setTempSymbol(e.target.value)}
+                onBlur={() => setIsEditingSymbol(false)}
+              />
+            </form>
+          ) : (
+            <span 
+              className="text-xs font-medium text-gray-400 cursor-pointer hover:text-white transition-colors flex items-center gap-1"
+              onClick={() => {
+                setTempSymbol(symbol);
+                setIsEditingSymbol(true);
+              }}
+            >
+              {symbol}
+              <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          )}
+          <span className="text-xs px-1 rounded bg-gray-700 text-gray-300">{timeframe}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className={`text-xl font-bold ${liveData.price >= candleOpenPrice ? "text-[#26a69a]" : "text-[#ef5350]"}`}>
+            {liveData.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          {liveData.signal !== "HOLD" && (
+            <span className={`text-xs px-2 py-0.5 rounded font-bold ${liveData.signal === "BUY" ? "bg-[#26a69a]/20 text-[#26a69a]" : "bg-[#ef5350]/20 text-[#ef5350]"}`}>
+              {liveData.signal}
+            </span>
+          )}
+        </div>
+      </div>
       <div ref={chartRef} style={{ width: "100%", height: "100%" }} />
     </div>
   );
 }
+

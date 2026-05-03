@@ -207,6 +207,30 @@ function TVAdvancedChart({ symbol, timeframe, height, liveData }: Props) {
             </span>
           </div>
 
+          {/* Real-time Price Sync Overlay */}
+          <div
+            style={{
+              background: surface,
+              border: `1px solid ${border}`,
+              borderRadius: 8,
+              padding: "6px 12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+              boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+               <span style={{ color: liveData.price >= (liveData.prev_price || liveData.price) ? "#26a69a" : "#ef5350", fontSize: 18, fontWeight: 800, fontFamily: "monospace" }}>
+                 {liveData.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+               </span>
+               <div className="flex flex-col">
+                  <span style={{ fontSize: 9, color: muted, fontWeight: 700 }}>LIVE_FEED</span>
+                  <div style={{ height: 2, width: 20, background: liveData.price >= (liveData.prev_price || liveData.price) ? "#26a69a" : "#ef5350", borderRadius: 1 }} />
+               </div>
+            </div>
+          </div>
+
           {/* Entry / SL / TP mini panel */}
           {liveData.signal !== "HOLD" && liveData.entry_price > 0 && (
             <div

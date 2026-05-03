@@ -2,3 +2,14 @@
 .env.local
 __pycache__/
 node_modules/
+venv/
+.venv/
+.next/
+dist/
+build/
+.DS_Store
+*.pyc
+.idea/
+.vscode/
+.cursor/
+.jetro/
