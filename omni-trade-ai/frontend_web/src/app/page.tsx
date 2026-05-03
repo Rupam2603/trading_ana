@@ -114,7 +114,6 @@ const Dashboard = () => {
   const [selectedTvSymbol, setSelectedTvSymbol] = useState("BINANCE:BTCUSDT");
   const [tradingMode, setTradingMode] = useState<'SCALPING' | 'STANDARD' | 'SWING'>('SCALPING');
   const [timeframe, setTimeframe] = useState("1");
-  const [ratioMultiplier, setRatioMultiplier] = useState(2.5);
   const timeframeRef = useRef(timeframe);
   const mockIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -551,8 +550,8 @@ const Dashboard = () => {
             <AssetSearch selectedId={selectedTicker} onSelect={handleAssetSelect} />
           </div>
 
-          {/* R:R Selector */}
-          <RatioSelector initialRatio={2.5} onRatioChange={setRatioMultiplier} />
+          {/* R:R Selector — reads/writes global RRContext */}
+          <RatioSelector />
 
           {/* Strategy Intelligence */}
           <div className="p-4 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
