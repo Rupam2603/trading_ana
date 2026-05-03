@@ -442,7 +442,7 @@ const Dashboard = () => {
         mockIntervalRef.current = null;
       }
     };
-  }, [selectedTicker, ratioMultiplier]);
+  }, [selectedTicker]);
 
   const getAtrLevel = (atr: number, price: number) => {
     const rel = (atr / price) * 1000;
