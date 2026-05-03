@@ -317,7 +317,8 @@ const Dashboard = () => {
     const fetchDirectPrice = async () => {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${host}:8000`;
-        const response = await fetch(`${apiUrl}/api/price/${selectedTicker}`);
+        const currentStyle = timeframeRef.current === '1' ? 'Scalping' : timeframeRef.current === '240' || timeframeRef.current === 'D' ? 'Swing' : 'Standard';
+        const response = await fetch(`${apiUrl}/api/price/${selectedTicker}?style=${currentStyle}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         
@@ -330,6 +331,7 @@ const Dashboard = () => {
           
           setLiveData(prev => ({
             ...prev,
+            ...data, // Map all fields returned by the updated API (signal, entry_price, etc.)
             price: data.price,
             ticker: selectedTicker
           }));
@@ -601,7 +603,7 @@ const Dashboard = () => {
                 <div className="w-1.5 h-1.5 rounded-full dot-pulse" style={{ background: 'var(--bullish)', color: 'var(--bullish)' }} />
               </div>
               <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate tracking-tight">
-                {liveData.price > 0 ? liveData.price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
+                {liveData.price > 0 ? liveData.price.toLocaleString(undefined, { minimumFractionDigits: liveData.price < 10 ? 4 : 2, maximumFractionDigits: liveData.price < 10 ? 6 : 2 }) : "---"}
               </div>
             </div>
 
@@ -626,7 +628,7 @@ const Dashboard = () => {
                 Entry Point
               </div>
               <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate" style={{ color: 'var(--prediction)' }}>
-                {liveData.entry_price > 0 ? liveData.entry_price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
+                {liveData.entry_price > 0 ? liveData.entry_price.toLocaleString(undefined, { minimumFractionDigits: liveData.entry_price < 10 ? 4 : 2, maximumFractionDigits: liveData.entry_price < 10 ? 6 : 2 }) : "---"}
               </div>
             </div>
 
@@ -640,7 +642,7 @@ const Dashboard = () => {
                 Stop Loss
               </div>
               <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate" style={{ color: 'var(--bearish)' }}>
-                {liveData.stop_loss > 0 ? liveData.stop_loss.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
+                {liveData.stop_loss > 0 ? liveData.stop_loss.toLocaleString(undefined, { minimumFractionDigits: liveData.stop_loss < 10 ? 4 : 2, maximumFractionDigits: liveData.stop_loss < 10 ? 6 : 2 }) : "---"}
               </div>
             </div>
 
@@ -654,7 +656,7 @@ const Dashboard = () => {
                 Target TP
               </div>
               <div className="text-lg md:text-xl font-bold mt-1 tabular-nums truncate" style={{ color: 'var(--bullish)' }}>
-                {liveData.target_price > 0 ? liveData.target_price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "---"}
+                {liveData.target_price > 0 ? liveData.target_price.toLocaleString(undefined, { minimumFractionDigits: liveData.target_price < 10 ? 4 : 2, maximumFractionDigits: liveData.target_price < 10 ? 6 : 2 }) : "---"}
               </div>
             </div>
 
@@ -831,30 +833,169 @@ const Dashboard = () => {
               </div>
             </div>
 
-            {/* TradingView chart */}
-            <div
-              className="relative rounded-xl overflow-hidden shadow-2xl"
-              style={{
-                border: '1px solid var(--border)',
-                height: isMobile ? '500px' : `${chartHeight}px`,
-              }}
-            >
-              <TVChart
-                symbol={TV_SYMBOL_MAP[selectedTicker] || selectedTicker}
-                timeframe={timeframe}
-                height={isMobile ? 500 : chartHeight}
-                liveData={liveData}
-              />
-
-              {/* Horizontal Resizer (Desktop Only) */}
-              {!isMobile && (
-                <div
-                  onMouseDown={startResizingH}
-                  className="h-1.5 w-full cursor-row-resize rounded-full transition-colors absolute bottom-0 left-0 z-20"
-                  style={{ background: 'transparent' }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--bullish)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            {/* Chart + Side Stats Layout */}
+            <div className="flex flex-col xl:flex-row gap-4 items-stretch">
+              {/* TradingView chart */}
+              <div
+                className="flex-1 relative rounded-xl overflow-hidden shadow-2xl"
+                style={{
+                  border: '1px solid var(--border)',
+                  height: isMobile ? '500px' : `${chartHeight}px`,
+                }}
+              >
+                <TVChart
+                  symbol={TV_SYMBOL_MAP[selectedTicker] || selectedTicker}
+                  timeframe={timeframe}
+                  height={isMobile ? 500 : chartHeight}
+                  liveData={liveData}
                 />
+
+                {/* Horizontal Resizer (Desktop Only) */}
+                {!isMobile && (
+                  <div
+                    onMouseDown={startResizingH}
+                    className="h-1.5 w-full cursor-row-resize rounded-full transition-colors absolute bottom-0 left-0 z-20"
+                    style={{ background: 'transparent' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bullish)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                  />
+                )}
+              </div>
+
+              {/* Side Stats Panel */}
+              {!isMobile && (
+                <div className="xl:w-72 flex flex-col gap-3 flex-shrink-0">
+                  {/* Price Card */}
+                  <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800 flex flex-col gap-1 shadow-lg">
+                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Live Price Feed</span>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-2xl font-black tabular-nums ${liveData.price >= (liveData.prev_price || liveData.price) ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {liveData.price.toLocaleString(undefined, { minimumFractionDigits: liveData.price < 10 ? 4 : 2, maximumFractionDigits: liveData.price < 10 ? 6 : 2 })}
+                      </span>
+                      <div className="flex flex-col items-end">
+                        <span className="text-[8px] text-zinc-600 font-black">MARKET_STATUS</span>
+                        <div className={`w-12 h-1 rounded-full mt-1 ${liveData.price >= (liveData.prev_price || liveData.price) ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Signal Info */}
+                  <div className={`p-4 rounded-xl border flex flex-col gap-3 shadow-lg ${
+                    liveData.signal === 'BUY' ? 'bg-emerald-500/5 border-emerald-500/20' : 
+                    liveData.signal === 'SELL' ? 'bg-rose-500/5 border-rose-500/20' : 
+                    'bg-zinc-900/40 border-zinc-800'
+                  }`}>
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">AI Consensus</span>
+                      <div className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                        liveData.signal === 'BUY' ? 'bg-emerald-500 text-black' : 
+                        liveData.signal === 'SELL' ? 'bg-rose-500 text-black' : 
+                        'bg-zinc-800 text-zinc-400'
+                      }`}>
+                        {liveData.signal}
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <div className={`h-full transition-all duration-1000 ${
+                          liveData.signal === 'BUY' ? 'bg-emerald-500' : 
+                          liveData.signal === 'SELL' ? 'bg-rose-500' : 
+                          'bg-zinc-600'
+                        }`} style={{ width: `${liveData.confidence * 100}%` }} />
+                      </div>
+                      <span className="text-xs font-bold tabular-nums">{(liveData.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                  </div>
+
+                  {/* AI Strategy Reasoning Panel */}
+                  <div className="p-5 rounded-xl bg-gradient-to-br from-indigo-900/40 to-black border border-indigo-500/30 shadow-2xl flex flex-col gap-4 relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+                      <Cpu size={60} className="text-indigo-400" />
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                      <span className="text-[10px] text-indigo-300 font-black uppercase tracking-widest">AI Analyst Narrative</span>
+                    </div>
+
+                    <div className="text-sm font-medium leading-relaxed text-zinc-300 italic min-h-[60px]">
+                      &quot;{liveData.reasoning || "Analyzing market structure and volume profiles for optimal entry alignment..."}&quot;
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-[10px] font-bold text-zinc-500 uppercase">
+                        <span>Analysis Confidence</span>
+                        <span className="text-indigo-400">{(liveData.confidence * 100).toFixed(0)}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-gradient-to-r from-indigo-600 to-purple-500 transition-all duration-1000 ease-out" 
+                          style={{ width: `${liveData.confidence * 100}%` }} 
+                        />
+                      </div>
+                    </div>
+
+                    {liveData.signal !== 'HOLD' && (
+                      <button 
+                        onClick={() => {
+                          addLog(`AI parameters applied to trade ticket for ${selectedTicker}`);
+                          addNotification("Strategy Applied", "AI-optimized SL and TP coordinates transferred to trade ticket.", "success");
+                        }}
+                        className="w-full py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black uppercase tracking-tighter transition-all active:scale-95 shadow-[0_0_20px_rgba(79,70,229,0.3)] flex items-center justify-center gap-2"
+                      >
+                        <Layers size={14} />
+                        Apply AI Strategy
+                      </button>
+                    )}
+                    
+                    <div className="pt-2 flex items-center justify-between opacity-50">
+                       <span className="text-[8px] text-zinc-600 font-bold">LLM: CLAUDE_3.5_SONNET</span>
+                       <div className="flex gap-1">
+                          <div className="w-1 h-1 rounded-full bg-zinc-700" />
+                          <div className="w-1 h-1 rounded-full bg-zinc-700" />
+                          <div className="w-1 h-1 rounded-full bg-zinc-700" />
+                       </div>
+                    </div>
+                  </div>
+
+                  {/* Entry/SL/TP Details (Redesigned) */}
+                  {liveData.signal !== 'HOLD' && (
+                    <div className="flex-1 p-5 rounded-xl bg-zinc-900/40 border border-zinc-800 shadow-xl flex flex-col gap-6 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 p-2 opacity-5">
+                         <Activity size={80} />
+                      </div>
+                      
+                      <div className="space-y-1 relative">
+                        <div className="text-[9px] text-zinc-500 font-bold uppercase tracking-tighter">AI Entry Node</div>
+                        <div className="text-xl font-black text-cyan-400 tabular-nums font-mono">
+                          {liveData.entry_price > 0 ? liveData.entry_price.toLocaleString(undefined, { minimumFractionDigits: liveData.entry_price < 10 ? 4 : 2, maximumFractionDigits: liveData.entry_price < 10 ? 6 : 2 }) : '---'}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 relative">
+                        <div className="text-[9px] text-zinc-500 font-bold uppercase tracking-tighter">Safe Exit (SL)</div>
+                        <div className="text-xl font-black text-rose-500 tabular-nums font-mono">
+                          {liveData.stop_loss > 0 ? liveData.stop_loss.toLocaleString(undefined, { minimumFractionDigits: liveData.stop_loss < 10 ? 4 : 2, maximumFractionDigits: liveData.stop_loss < 10 ? 6 : 2 }) : '---'}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 relative">
+                        <div className="text-[9px] text-zinc-500 font-bold uppercase tracking-tighter">Profit Target (TP)</div>
+                        <div className="text-xl font-black text-emerald-500 tabular-nums font-mono">
+                          {liveData.target_price > 0 ? liveData.target_price.toLocaleString(undefined, { minimumFractionDigits: liveData.target_price < 10 ? 4 : 2, maximumFractionDigits: liveData.target_price < 10 ? 6 : 2 }) : '---'}
+                        </div>
+                      </div>
+
+                      <div className="mt-auto pt-4 border-t border-zinc-800/50">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-zinc-500 font-bold">R:R Performance</span>
+                          <span className="text-xs font-black text-purple-400">1:{(Math.abs(liveData.target_price - liveData.entry_price) / Math.abs(liveData.entry_price - liveData.stop_loss) || 0).toFixed(1)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>

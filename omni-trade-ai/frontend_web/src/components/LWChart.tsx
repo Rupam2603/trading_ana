@@ -243,49 +243,6 @@ export function LWChart({ symbol, height, timeframe, liveData, onSymbolChange }:
 
   return (
     <div className="lw-chart-container" style={{ height, position: "relative" }}>
-      <div 
-        className="absolute top-4 left-4 z-10 flex flex-col gap-1 p-2 rounded bg-black/40 backdrop-blur-md border border-white/10"
-        style={{ pointerEvents: "auto" }}
-      >
-        <div className="flex items-center gap-2">
-          {isEditingSymbol ? (
-            <form onSubmit={handleSymbolSubmit}>
-              <input
-                autoFocus
-                type="text"
-                className="bg-gray-800 text-xs text-white border border-blue-500 rounded px-1 w-20 outline-none"
-                value={tempSymbol}
-                onChange={(e) => setTempSymbol(e.target.value)}
-                onBlur={() => setIsEditingSymbol(false)}
-              />
-            </form>
-          ) : (
-            <span 
-              className="text-xs font-medium text-gray-400 cursor-pointer hover:text-white transition-colors flex items-center gap-1"
-              onClick={() => {
-                setTempSymbol(symbol);
-                setIsEditingSymbol(true);
-              }}
-            >
-              {symbol}
-              <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </span>
-          )}
-          <span className="text-xs px-1 rounded bg-gray-700 text-gray-300">{timeframe}</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className={`text-xl font-bold ${liveData.price >= candleOpenPrice ? "text-[#26a69a]" : "text-[#ef5350]"}`}>
-            {liveData.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </span>
-          {liveData.signal !== "HOLD" && (
-            <span className={`text-xs px-2 py-0.5 rounded font-bold ${liveData.signal === "BUY" ? "bg-[#26a69a]/20 text-[#26a69a]" : "bg-[#ef5350]/20 text-[#ef5350]"}`}>
-              {liveData.signal}
-            </span>
-          )}
-        </div>
-      </div>
       <div ref={chartRef} style={{ width: "100%", height: "100%" }} />
     </div>
   );

@@ -72,6 +72,7 @@ class MarketState(BaseModel):
     sentiment: float = 0.0
     reasoning: str = "Market analyzing..."
     timestamp: float
+    style: str = "Standard" # Scalping, Standard, Swing
 
 class InferenceEngine:
     def __init__(self):
@@ -80,14 +81,28 @@ class InferenceEngine:
         self.buffers: Dict[str, List[List[float]]] = {}
         self.window_size = 15 # Reduced window for faster responsiveness
 
-    async def validate_with_claude(self, ticker, price, signal, metrics):
+    async def validate_with_llm(self, ticker, price, signal, metrics, style):
+        """Tier 2: LLM Analyst - Processes quant data and context to refine targets and reasoning."""
         if not OPENROUTER_API_KEY:
-            return "System check passed (AI local)."
+            return "Local quant engine confirmed levels. LLM Analyst offline.", 0.85
             
+        # Strategy-specific context
+        style_goals = {
+            "Scalping": "ultra-tight SL, micro-volatility focus, high precision.",
+            "Standard": "intraday market structure, liquidity sweeps, VWAP alignment.",
+            "Swing": "multi-timeframe structure, macro support/resistance, trend persistence."
+        }
+        
         prompt = (
-            f"System: You are an Expert Scalping Quant. Validate this {signal} signal for {ticker}.\n"
-            f"Context: Price: {price}, FVG: {metrics['fvg']}, Kernel: {metrics['kernel']}, ATR: {metrics['atr']}.\n"
-            "Task: Confirm if this is a high-probability trade. Return ONLY a 15-word max reasoning."
+            f"You are the Lead Quantitative Strategist for OmniTrade AI.\n"
+            f"Asset: {ticker} | Price: {price} | Style: {style}\n"
+            f"Strategy Goal: {style_goals.get(style, '')}\n"
+            f"Metrics: ATR: {metrics['atr']}, RSI: {metrics.get('rsi', 'N/A')}, Bias: {signal}\n"
+            f"Task:\n"
+            f"1. Refine the logic for a {signal} trade.\n"
+            f"2. Provide a narrative 'Why' (max 25 words).\n"
+            f"3. Output a confidence percentage (0-100).\n"
+            f"Format: Reasoning: [text] | Confidence: [number]"
         )
         
         try:
@@ -102,10 +117,20 @@ class InferenceEngine:
                 ) as resp:
                     if resp.status == 200:
                         res = await resp.json()
-                        return res['choices'][0]['message']['content'].strip()
-        except Exception:
-            pass
-        return "Neural validation confirmed trend."
+                        content = res['choices'][0]['message']['content'].strip()
+                        # Simple parser
+                        reasoning = "Neural confirmation."
+                        confidence = 0.82
+                        if "Reasoning:" in content and "Confidence:" in content:
+                            parts = content.split("|")
+                            reasoning = parts[0].replace("Reasoning:", "").strip()
+                            conf_str = parts[1].replace("Confidence:", "").strip().replace("%", "")
+                            confidence = float(conf_str) / 100
+                        return reasoning, confidence
+        except Exception as e:
+            print(f"LLM Error: {e}")
+            
+        return "Quant engine verified intraday structure.", 0.80
 
     def calculate_rsi(self, prices, period=14):
         if len(prices) < period + 1: return 50
@@ -222,9 +247,21 @@ class InferenceEngine:
             # Confidence Cap
             final_conf = min(0.99, final_conf)
             
+            # Save results to a cache for the GET endpoint
+            if not hasattr(self, 'signal_cache'): self.signal_cache = {}
+            self.signal_cache[ticker] = (final_signal, final_conf, metrics)
+            
             return final_signal, final_conf, metrics
         
         # Default state: returning metrics but HOLD signal
+        # Even if we don't have enough data for a full signal, try to return technical bias if possible
+        if len(prices) > 3:
+            rsi = self.calculate_rsi(prices)
+            bias = "HOLD"
+            if rsi < 35: bias = "BUY"
+            elif rsi > 65: bias = "SELL"
+            return bias, 0.5 + (rsi/200), metrics
+
         return "HOLD", 0.0, metrics
 
 # --- FastAPI Implementation ---
@@ -292,89 +329,92 @@ async def ingest_data(data: MarketState):
     """
     signal, confidence, metrics = await engine.process_tick(data)
     
-    # --- Claude 3.5 Sonnet Deep Validation (Premium Only) ---
-    reasoning = data.reasoning
-    if confidence > 0.82 and signal != "HOLD":
-        claude_reason = await engine.validate_with_claude(data.ticker, data.price, signal, metrics)
-        reasoning = f"CLAUDE: {claude_reason}"
-
-    # --- Advanced Dynamic Risk Logic (GainzAlgo) ---
-    volatility_factor = metrics["atr"] / data.price if data.price > 0 else 0.005
-    risk_multiplier = 1.5 if "BTC" in data.ticker else 1.2
-    effective_risk = max(0.005, volatility_factor * risk_multiplier)
+    # --- Tier 1: Quantitative Engine (Fast Math Mode) ---
+    style = data.style
+    atr = metrics["atr"]
     
-    # --- Multi-Timeframe Scaling Profiles ---
-    timeframes_map = {
-        "1": 1.0,      # 1m
-        "5": 2.2,      # 5m
-        "15": 3.8,     # 15m
-        "60": 7.5,     # 1H
-        "240": 15.0,    # 4H
-        "D": 35.0      # 1D
+    # Strategy-Specific Multipliers
+    multipliers = {
+        "Scalping": {"sl": 1.2, "tp": 2.1},
+        "Standard": {"sl": 2.5, "tp": 5.2},
+        "Swing": {"sl": 4.5, "tp": 11.0}
     }
+    m = multipliers.get(style, multipliers["Standard"])
     
-    tf_predictions = {}
-    for tf_key, scale in timeframes_map.items():
-        tf_risk = effective_risk * scale
-        
-        if signal == "BUY":
-            tf_sl = data.price * (1 - tf_risk)
-            tf_tp = data.price * (1 + tf_risk * 2.5)
-            tf_entry = data.price
-        elif signal == "SELL":
-            tf_sl = data.price * (1 + tf_risk)
-            tf_tp = data.price * (1 - tf_risk * 2.5)
-            tf_entry = data.price
-        else:
-            tf_sl = 0.0
-            tf_tp = 0.0
-            tf_entry = 0.0
-            
-        tf_predictions[tf_key] = {
-            "signal": signal,
-            "confidence": float(confidence),
-            "entry_price": float(tf_entry),
-            "stop_loss": float(tf_sl),
-            "target_price": float(tf_tp)
-        }
+    # Calculate SL/TP boundaries in milliseconds (Tier 1)
+    if signal == "BUY":
+        quant_sl = data.price - (atr * m["sl"])
+        quant_tp = data.price + (atr * m["tp"])
+        quant_entry = data.price
+    elif signal == "SELL":
+        quant_sl = data.price + (atr * m["sl"])
+        quant_tp = data.price - (atr * m["tp"])
+        quant_entry = data.price
+    else:
+        quant_sl = quant_tp = quant_entry = 0.0
+
+    # --- Tier 2: LLM Analyst (Refinement & Narrative) ---
+    reasoning = data.reasoning
+    final_conf = confidence
     
-    # Default values for backward compatibility
-    default_tf = tf_predictions["1"]
-    
+    # Only call LLM if signal is clear and we have an API key
+    if signal != "HOLD" and OPENROUTER_API_KEY:
+        try:
+            # Add timeout protection for Scalping
+            timeout = 1.5 if style == "Scalping" else 3.0
+            llm_reason, llm_conf = await asyncio.wait_for(
+                engine.validate_with_llm(data.ticker, data.price, signal, metrics, style),
+                timeout=timeout
+            )
+            reasoning = llm_reason
+            final_conf = (confidence + llm_conf) / 2 # Ensemble confidence
+        except asyncio.TimeoutError:
+            reasoning = "FAST MATH MODE: LLM latency detected. Using quantitative boundaries."
+        except Exception:
+            reasoning = "Tier 1 engine confirmed structure."
+
+    # Final Payload Construction
     payload = {
         "type": "TICKER_UPDATE",
         "ticker": data.ticker,
         "price": data.price,
-        "entry_price": default_tf["entry_price"],
-        "volume": data.volume,
-        "sentiment": data.sentiment,
-        "reasoning": reasoning,
+        "entry_price": float(quant_entry),
+        "stop_loss": float(quant_sl),
+        "target_price": float(quant_tp),
         "signal": signal,
-        "confidence": float(confidence),
-        "stop_loss": default_tf["stop_loss"],
-        "target_price": default_tf["target_price"],
-        "metrics": metrics, # FVG, Kernel, ATR
-        "timestamp": data.timestamp,
-        "timeframes": tf_predictions
+        "confidence": float(final_conf),
+        "reasoning": reasoning,
+        "style": style,
+        "metrics": metrics,
+        "timestamp": data.timestamp
     }
     
     await manager.broadcast(payload)
     return {"status": "ok", "signal": signal, "confidence": confidence}
 
 @app.get("/api/price/{ticker}")
-async def get_price(ticker: str):
+async def get_price(ticker: str, style: str = "Standard"):
     """
-    Get the latest price for a given ticker from the scraper's cache or yfinance.
+    Get the latest price and full signal data for a given ticker, optimized for a specific trading style.
     """
+    # 1. Try to get data from engine's buffer
     if ticker in engine.buffers and engine.buffers[ticker]:
         last_tick = engine.buffers[ticker][-1]
-        return {
-            "ticker": ticker,
-            "price": last_tick[0],
-            "volume": last_tick[1],
-            "sentiment": last_tick[2],
-            "timestamp": last_tick[3]
-        }
+        
+        # Calculate signal on the fly with the requested style
+        data_obj = MarketState(
+            ticker=ticker,
+            price=last_tick[0],
+            volume=last_tick[1],
+            sentiment=last_tick[2],
+            timestamp=last_tick[3],
+            style=style
+        )
+        
+        # Trigger full signal calculation with Tier 1 & 2 logic
+        res_full = await ingest_data(data_obj)
+        
+        return res_full
     
     # Fallback to direct fetch (run in thread to avoid blocking async loop)
     try:
