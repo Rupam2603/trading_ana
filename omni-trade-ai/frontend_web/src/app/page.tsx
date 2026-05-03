@@ -20,6 +20,7 @@ import { RatioSelector } from '@/components/RatioSelector';
 import { AssetSearch, ASSET_CATALOGUE } from '@/components/AssetSearch';
 import { TVChart } from '@/components/TVChart';
 import { LWChart } from '@/components/LWChart';
+import { RiskCalculator } from '@/components/RiskCalculator';
 import { useTheme } from '@/app/providers';
 
 
@@ -763,6 +764,9 @@ const Dashboard = () => {
               ))}
             </div>
           </div>
+
+          {/* ── Risk Calculator ── */}
+          <RiskCalculator liveData={liveData} ticker={selectedTicker} />
 
           {/* Chart Section */}
           <div className="space-y-2">
