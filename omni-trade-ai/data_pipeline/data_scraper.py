@@ -3,6 +3,8 @@ import aiohttp
 import yfinance as yf
 import logging
 import time
+import json
+from typing import List
 from datetime import datetime
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer

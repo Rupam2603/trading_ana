@@ -16,6 +16,10 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from uuid import uuid4
+from cache import stability_lock
+from strategies.scalping_engine import analyze_scalping
+from strategies.standard_engine import analyze_standard
+from strategies.swing_engine import analyze_swing
 
 load_dotenv()
 
@@ -23,10 +27,12 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # --- Multi-Model Ensemble Configuration ---
 MODELS = {
-    "strategy":  "anthropic/claude-sonnet-4",       # Algorithmic strategy design
-    "math":      "deepseek/deepseek-r1",                  # Financial math precision
-    "sentiment": "deepseek/deepseek-r1",                  # Sentiment / forecasting fallback
-    "fast":      "anthropic/claude-sonnet-4",   # Low-latency scalping
+    "strategy":  "anthropic/claude-3-opus",         # Claude Opus for algorithmic strategy
+    "coding":    "anthropic/claude-3.5-sonnet",     # Claude 3.5 Sonnet for script/logic
+    "math":      "deepseek/deepseek-r1",            # DeepSeek-R1 for financial math precision
+    "reasoning": "qwen/qwq-32b-preview",            # Qwen QwQ for complex reasoning
+    "sentiment": "qwen/qwen-2.5-72b-instruct",      # Qwen for market forecasting/FinGPT role
+    "fast":      "anthropic/claude-3.5-sonnet",     # Fast execution layer
 }
 
 TICKER_MAP = {
@@ -110,54 +116,94 @@ class InferenceEngine:
         self.balance = 100000.0
         self.signal_cache = {}
         self.real_atr_cache: Dict[str, dict] = {}  # ticker -> {atr, high, low, support, resist, ts}
+        self.prediction_memory: Dict[str, dict] = {} # ticker -> {signal, entry, sl, tp, conf, reason, ts, price, style}
+        self.full_prediction_history: List[dict] = []
+        self._processing_locks: Dict[tuple, asyncio.Lock] = {}
 
-    async def fetch_real_ohlc_levels(self, ticker: str):
+    def get_lock(self, ticker: str, style: str) -> asyncio.Lock:
+        key = (ticker, style)
+        if key not in self._processing_locks:
+            self._processing_locks[key] = asyncio.Lock()
+        return self._processing_locks[key]
+
+    async def fetch_real_ohlc_levels(self, ticker: str, mode: str = "Standard"):
         """Fetch REAL OHLC candles from yfinance to compute true ATR and S/R levels."""
         yf_ticker = REVERSE_TICKER_MAP.get(ticker, ticker)
-        cache = self.real_atr_cache.get(ticker)
-        if cache and (time.time() - cache["ts"]) < 120:  # Cache 2 min
+        
+        # Timeframe mapping for liquidity assessment
+        tf_map = {"Scalping": "5m", "Standard": "15m", "Swing": "1h"}
+        interval = tf_map.get(mode, "15m")
+        period_map = {"5m": "1d", "15m": "5d", "1h": "1mo"}
+        period = period_map.get(interval, "5d")
+
+        cache_key = f"{ticker}_{mode}"
+        cache = self.real_atr_cache.get(cache_key)
+        if cache and (time.time() - cache["ts"]) < 60:  # Cache 1 min
             return cache
 
         try:
             def _fetch():
                 t = yf.Ticker(yf_ticker)
-                df = t.history(period="5d", interval="15m")
-                if df.empty:
-                    df = t.history(period="5d", interval="1h")
-                return df
+                return t.history(period=period, interval=interval)
             df = await asyncio.to_thread(_fetch)
             if df.empty:
                 return None
 
+            # Clean data: drop NaNs and keep only numeric values
+            df = df.dropna(subset=['High', 'Low', 'Close', 'Volume'])
             highs = df['High'].values
             lows = df['Low'].values
             closes = df['Close'].values
+            volumes = df['Volume'].values
 
-            # True Range ATR (proper Wilder method)
+            if len(closes) < 20: return None
+
+            # 1. ATR Calculation (Wilder Method)
             trs = []
             for i in range(1, len(closes)):
-                tr = max(highs[i] - lows[i],
-                         abs(highs[i] - closes[i-1]),
-                         abs(lows[i] - closes[i-1]))
-                trs.append(tr)
-            atr_14 = sum(trs[-14:]) / min(14, len(trs)) if trs else closes[-1] * 0.01
+                trs.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
+            valid_trs = [tr for tr in trs if tr > 0]
+            raw_atr = sum(valid_trs[-14:]) / min(14, len(valid_trs)) if valid_trs else closes[-1] * 0.005
+            atr_14 = max(raw_atr, closes[-1] * 0.0015)
 
-            # Key S/R levels from recent swings
-            recent_highs = sorted(highs[-40:], reverse=True)
-            recent_lows = sorted(lows[-40:])
-            resistance = float(recent_highs[2]) if len(recent_highs) > 2 else float(highs[-1])
-            support = float(recent_lows[2]) if len(recent_lows) > 2 else float(lows[-1])
+            # 2. Confluence: EMA 20 & VWAP
+            ema_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+            # Simple VWAP proxy for session (last 24 hours of 15m candles)
+            v_sum = df['Volume'].iloc[-96:].sum()
+            pv_sum = (df['Close'] * df['Volume']).iloc[-96:].sum()
+            vwap = pv_sum / v_sum if v_sum > 0 else closes[-1]
+
+            # 3. Fibonacci Extensions
+            recent_low = min(lows[-100:])
+            recent_high = max(highs[-100:])
+            diff = recent_high - recent_low
+            fib_1618 = recent_high + (diff * 0.618) if diff > 0 else closes[-1] * 1.05
+            fib_0618 = recent_low + (diff * 0.618)
+
+            # 4. Volume Profile (POC)
+            # Divide range into 10 bins to find high volume node
+            bins = 10
+            min_p, max_p = min(lows[-100:]), max(highs[-100:])
+            bin_size = (max_p - min_p) / bins
+            vol_bins = [0] * bins
+            for p, v in zip(closes[-100:], volumes[-100:]):
+                idx = min(int((p - min_p) / bin_size), bins-1)
+                vol_bins[idx] += v
+            poc_idx = vol_bins.index(max(vol_bins))
+            poc_price = min_p + (poc_idx * bin_size) + (bin_size/2)
 
             result = {
                 "atr": float(atr_14),
-                "high": float(highs[-1]),
-                "low": float(lows[-1]),
-                "support": support,
-                "resistance": resistance,
-                "daily_range": float(max(highs[-20:]) - min(lows[-20:])),
+                "ema_20": float(ema_20),
+                "vwap": float(vwap),
+                "fib_1618": float(fib_1618),
+                "poc": float(poc_price),
+                "support": float(min(lows[-40:])),
+                "resistance": float(max(highs[-40:])),
+                "daily_range": float(recent_high - recent_low),
                 "ts": time.time()
             }
-            self.real_atr_cache[ticker] = result
+            self.real_atr_cache[cache_key] = result
             return result
         except Exception as e:
             print(f"OHLC fetch error for {ticker}: {e}")
@@ -184,102 +230,131 @@ class InferenceEngine:
         return None
 
     async def ensemble_predict(self, ticker, price, signal, metrics, style, ohlc):
-        """Multi-model ensemble: Strategy model for SL/TP, Math model for validation."""
-        atr = ohlc["atr"] if ohlc else metrics["atr"]
-        support = ohlc["support"] if ohlc else price * 0.98
-        resistance = ohlc["resistance"] if ohlc else price * 1.02
-
-        # --- Model 1: Strategy Architect (Claude Opus) ---
+        """
+        OmniTrade 3-Tier Ensemble:
+        1. Strategy Architect (Claude Opus) - Core SL/TP/Entry logic.
+        2. Math Validator (DeepSeek-R1) - Precision verification.
+        3. Market Forecast (Qwen) - Trend sentiment & final confidence.
+        """
+        # Extract ATR from metrics for prompt injection
+        atr = metrics.get('atr', price * 0.01)
+        
+        # Strategic Prompt with Injected Math
         strategy_prompt = (
-            f"You are a quantitative trading strategist. Provide EXACT numeric levels.\n"
-            f"Asset: {ticker} | Current Price: {price:.6f} | Signal: {signal} | Style: {style}\n"
-            f"ATR(14): {atr:.6f} | Support: {support:.6f} | Resistance: {resistance:.6f}\n"
-            f"Daily Range: {ohlc['daily_range']:.6f if ohlc else 'N/A'}\n\n"
-            f"Rules for {style}:\n"
-            f"- Scalping: SL = 0.5-1.0x ATR from entry, TP = 1.0-2.0x ATR. Ultra-tight.\n"
-            f"- Standard: SL = 1.5-2.5x ATR, TP = 3.0-5.0x ATR. Intraday structure.\n"
-            f"- Swing: SL = 2.0-3.5x ATR, TP = 5.0-10.0x ATR. Multi-day holds.\n\n"
-            f"For a {signal} trade, calculate:\n"
-            f"ENTRY: [exact price] | SL: [exact price] | TP: [exact price] | CONFIDENCE: [0-100]\n"
-            f"REASONING: [max 25 words why this trade makes sense]\n\n"
-            f"Output ONLY this format, nothing else:\n"
-            f"ENTRY={{number}} SL={{number}} TP={{number}} CONFIDENCE={{number}} REASONING={{text}}"
+            f"You are an Expert Quant-AI Trader. I have pre-calculated the core math coordinates.\n"
+            f"Ticker: {ticker} | Price: {price:.4f} | Signal: {signal} | Style: {style}\n"
+            f"CONFLUENCE DATA:\n"
+            f"- ATR: {atr:.4f} | POC (Volume Profile): {ohlc['poc']:.4f}\n"
+            f"- EMA 20: {ohlc['ema_20']:.4f} | VWAP: {ohlc['vwap']:.4f}\n"
+            f"- Fib 1.618: {ohlc['fib_1618']:.4f}\n\n"
+            f"TRADING PROTOCOL ({style}):\n"
+            f"1. ENTRY: Must align with POC, EMA, or VWAP pullback. Offset from round numbers.\n"
+            f"2. STOP LOSS: Use 1.5x-2.0x ATR for {style}. Place behind S/R={ohlc['support'] if signal=='BUY' else ohlc['resistance']}.\n"
+            f"3. TAKE PROFIT: Target Fib 1.618 or Resistance={ohlc['resistance'] if signal=='BUY' else ohlc['support']}. Enforce 1:1.5 R:R min.\n\n"
+            f"OUTPUT ONLY JSON:\n"
+            f"{{\"entry\": float, \"sl\": float, \"tp\": float, \"confidence\": 0-100, \"reasoning\": \"max 2 sentences\"}}"
         )
 
-        # --- Model 2: Math Validator (DeepSeek-R1) ---
-        math_prompt = (
-            f"Validate this trade setup mathematically. Be precise.\n"
-            f"Asset: {ticker} | Price: {price:.6f} | Direction: {signal}\n"
-            f"ATR: {atr:.6f} | Support: {support:.6f} | Resistance: {resistance:.6f}\n"
-            f"Style: {style}\n\n"
-            f"Calculate the optimal risk-reward ratio and exact SL/TP prices.\n"
-            f"For {signal}: SL should be below support (BUY) or above resistance (SELL).\n"
-            f"TP should target the next key level with minimum 1:2 R:R.\n\n"
-            f"Output ONLY: ENTRY={{number}} SL={{number}} TP={{number}} CONFIDENCE={{number}}"
-        )
-
-        # Run both models in parallel
-        strategy_result, math_result = await asyncio.gather(
-            self.call_model("strategy", strategy_prompt, timeout=10.0),
-            self.call_model("math", math_prompt, timeout=10.0),
+        results = await asyncio.gather(
+            self.call_model("strategy", strategy_prompt, timeout=12.0),
+            self.call_model("math", f"Verify 1:2 R:R for {signal} at {price}. ATR={atr}. Support={ohlc['support']}. Output ONLY JSON: {{\"valid\": bool, \"sl\": float, \"tp\": float}}", timeout=8.0),
+            self.call_model("reasoning", f"Forecast probability for {signal} at {price}. Style: {style}. Output ONLY: PROBABILITY = X", timeout=8.0),
             return_exceptions=True
         )
 
-        def parse_levels(text):
-            if not text or isinstance(text, Exception):
-                return None
+        def parse_json(text):
+            if not text or isinstance(text, Exception): return None
+            import json, re
             try:
-                import re
-                entry_m = re.search(r'ENTRY\s*=\s*([\d.]+)', text)
-                sl_m = re.search(r'SL\s*=\s*([\d.]+)', text)
-                tp_m = re.search(r'TP\s*=\s*([\d.]+)', text)
-                conf_m = re.search(r'CONFIDENCE\s*=\s*([\d.]+)', text)
-                reason_m = re.search(r'REASONING\s*=\s*(.+)', text)
-                if entry_m and sl_m and tp_m:
-                    return {
-                        "entry": float(entry_m.group(1)),
-                        "sl": float(sl_m.group(1)),
-                        "tp": float(tp_m.group(1)),
-                        "conf": float(conf_m.group(1)) / 100 if conf_m else 0.75,
-                        "reasoning": reason_m.group(1).strip() if reason_m else ""
-                    }
-            except Exception:
-                pass
-            return None
+                # Find JSON block
+                m = re.search(r'\{.*\}', text, re.DOTALL)
+                return json.loads(m.group(0)) if m else None
+            except: return None
 
-        strat = parse_levels(str(strategy_result)) if strategy_result else None
-        math = parse_levels(str(math_result)) if math_result else None
+        strat_data = parse_json(results[0])
+        math_data = parse_json(results[1])
 
-        # --- Ensemble Merge ---
-        if strat and math:
-            # Average the two models, weighted toward strategy model
-            entry = strat["entry"] * 0.6 + math["entry"] * 0.4
-            sl_val = strat["sl"] * 0.6 + math["sl"] * 0.4
-            tp_val = strat["tp"] * 0.6 + math["tp"] * 0.4
-            conf = (strat["conf"] + math["conf"]) / 2
-            reasoning = strat.get("reasoning", "Multi-model consensus confirmed trade levels.")
-            return entry, sl_val, tp_val, conf, reasoning
-        elif strat:
-            return strat["entry"], strat["sl"], strat["tp"], strat["conf"], strat.get("reasoning", "Strategy model confirmed.")
-        elif math:
-            return math["entry"], math["sl"], math["tp"], math["conf"], "Math model validated levels."
+        if strat_data:
+            return (
+                strat_data.get('entry', price),
+                strat_data.get('sl'),
+                strat_data.get('tp'),
+                strat_data.get('confidence', 70) / 100,
+                strat_data.get('reasoning', "Confluence consensus achieved.")
+            )
 
-        return None  # Fallback to quant engine
+        def parse_val(text, pattern):
+            if not text or isinstance(text, Exception): return None
+            import re
+            m = re.search(pattern, text)
+            return m.group(1) if m else None
+
+        # Check if we have enough results before unpacking
+        if len(results) < 3:
+            return price, price*0.99, price*1.02, 0.7, "Quant fallback consensus."
+
+        strat_raw, math_raw, fore_raw = results[:3]
+        
+        # Extract data
+        s_entry = parse_val(strat_raw, r'ENTRY\s*=\s*([\d.]+)')
+        s_sl = parse_val(strat_raw, r'SL\s*=\s*([\d.]+)')
+        s_tp = parse_val(strat_raw, r'TP\s*=\s*([\d.]+)')
+        s_conf = parse_val(strat_raw, r'CONFIDENCE\s*=\s*([\d.]+)')
+        s_reason = parse_val(strat_raw, r'REASONING\s*=\s*(.+)')
+        
+        m_entry = parse_val(math_raw, r'ENTRY\s*=\s*([\d.]+)')
+        m_sl = parse_val(math_raw, r'SL\s*=\s*([\d.]+)')
+        m_tp = parse_val(math_raw, r'TP\s*=\s*([\d.]+)')
+        
+        f_prob = parse_val(fore_raw, r'PROBABILITY\s*=\s*([\d.]+)')
+
+        # Merge Logic
+        if s_entry and m_entry:
+            # Weighted average: Opus (60%) + DeepSeek (40%)
+            final_entry = float(s_entry) * 0.6 + float(m_entry) * 0.4
+            final_sl = float(s_sl) * 0.6 + float(m_sl) * 0.4
+            final_tp = float(s_tp) * 0.6 + float(m_tp) * 0.4
+            
+            # Confidence weighting: Opus Conf + Qwen Prob
+            base_conf = float(s_conf) if s_conf else 75
+            prob_adj = float(f_prob) if f_prob else 50
+            final_conf = (base_conf * 0.7 + prob_adj * 0.3) / 100
+            
+            reason = s_reason if s_reason else "Triple-model consensus achieved."
+            return final_entry, final_sl, final_tp, final_conf, reason.strip()
+        
+        return None
+
+    def calculate_lot_size(self, entry, sl, risk_pct=1.0):
+        """Dynamic Position Sizing: (Balance * Risk%) / |Entry - SL|"""
+        risk_amount = self.balance * (risk_pct / 100.0)
+        price_diff = abs(entry - sl)
+        if price_diff == 0: return 0.01
+        return risk_amount / price_diff
 
     def execute_paper_trade(self, trade_data: dict):
         trade_id = str(uuid4())[:8]
+        
+        # Calculate optimal lot size if not provided
+        entry = float(trade_data['entry'])
+        sl = float(trade_data['sl'])
+        qty = trade_data.get('quantity')
+        if not qty:
+            qty = self.calculate_lot_size(entry, sl, risk_pct=trade_data.get('risk_pct', 1.0))
+
         new_trade = PaperTrade(
             id=trade_id,
             ticker=trade_data['ticker'],
             direction=trade_data['direction'],
-            entry_price=trade_data['entry'],
-            stop_loss=trade_data['sl'],
-            target_price=trade_data['tp'],
-            quantity=trade_data['quantity'],
+            entry_price=entry,
+            stop_loss=sl,
+            target_price=float(trade_data['tp']),
+            quantity=float(qty),
             entry_time=time.time(),
             source=trade_data.get('source', 'ai_strategy')
         )
         self.active_positions.append(new_trade)
+        print(f"[PAPER TRADE] Executed {new_trade.direction} {new_trade.ticker} | Qty: {qty:.4f} | Risk: {trade_data.get('risk_pct', 1.0)}%")
         return new_trade
 
     def process_matching_engine(self, ticker, current_price):
@@ -393,10 +468,31 @@ class InferenceEngine:
             
         # Calculate metrics even for partial buffers
         prices = [f[0] for f in self.buffers[ticker]]
+        volumes = [f[1] for f in self.buffers[ticker]]
         fvg = self.calculate_fvg(self.buffers[ticker])
         kernel_price = self.calculate_nadaraya_watson(prices, h=12)
         atr = self.calculate_atr(prices)
-        metrics = {"fvg": fvg, "kernel": kernel_price, "atr": atr}
+        
+        # Comprehensive fallbacks for Strategy Engines
+        vwap = sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
+        ema_20 = sum(prices[-20:]) / len(prices[-20:]) if len(prices) >= 20 else prices[-1]
+        poc = prices[volumes.index(max(volumes))] if volumes else prices[-1]
+        
+        # Simple S/R from buffer
+        support = min(prices)
+        resistance = max(prices)
+        
+        metrics = {
+            "fvg": fvg, 
+            "kernel": kernel_price, 
+            "atr": atr,
+            "vwap": vwap,
+            "ema_20": ema_20,
+            "poc": poc,
+            "support": support,
+            "resistance": resistance,
+            "fib_1618": support + (resistance - support) * 1.618
+        }
 
         if len(self.buffers[ticker]) == self.window_size:
             # 1. Neural Prediction
@@ -518,95 +614,104 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.post("/api/ingest")
 async def ingest_data(data: MarketState):
     """
-    Endpoint for data_scraper.py to push real-time market and sentiment data.
-    Now uses REAL OHLC ATR + Multi-Model Ensemble for accurate SL/TP.
+    Main ingestion endpoint. Routes predictions to specialized engines 
+    and implements the Timeframe Stability Lock.
     """
-    signal, confidence, metrics = await engine.process_tick(data)
-    
+    ticker = data.ticker
     style = data.style
     
-    # --- CRITICAL FIX: Fetch REAL ATR from OHLC candles ---
-    ohlc = await engine.fetch_real_ohlc_levels(data.ticker)
-    real_atr = ohlc["atr"] if ohlc else data.price * 0.01  # Fallback: 1% of price
-    
-    # Override the tick-based ATR with real ATR
-    metrics["atr"] = real_atr
-    if ohlc:
-        metrics["support"] = ohlc["support"]
-        metrics["resistance"] = ohlc["resistance"]
-    
-    # Strategy-Specific Multipliers (now applied to REAL ATR)
-    multipliers = {
-        "Scalping": {"sl": 0.8, "tp": 1.6},
-        "Standard": {"sl": 1.8, "tp": 4.0},
-        "Swing":    {"sl": 3.0, "tp": 8.0}
-    }
-    m = multipliers.get(style, multipliers["Standard"])
-    
-    # --- Tier 1: Quantitative Engine (Real ATR-based) ---
-    if signal == "BUY":
-        quant_sl = data.price - (real_atr * m["sl"])
-        quant_tp = data.price + (real_atr * m["tp"])
-        quant_entry = data.price
-    elif signal == "SELL":
-        quant_sl = data.price + (real_atr * m["sl"])
-        quant_tp = data.price - (real_atr * m["tp"])
-        quant_entry = data.price
-    else:
-        quant_sl = quant_tp = quant_entry = 0.0
+    # 1. --- STABILITY LOCK CHECK ---
+    # If we have a locked prediction for this candle, return it immediately.
+    locked = stability_lock.get_locked_prediction(ticker, style)
+    if locked:
+        # Update current price in the payload before broadcasting
+        payload = {**locked, "price": float(data.price), "timestamp": data.timestamp}
+        await manager.broadcast(payload)
+        return payload
 
-    reasoning = data.reasoning
-    final_conf = confidence
-    final_entry = quant_entry
-    final_sl = quant_sl
-    final_tp = quant_tp
+    # 3. --- STRATEGY ROUTING & CALCULATION ---
+    # Use a lock to prevent concurrent calculations for the same ticker/style
+    async with engine.get_lock(ticker, style):
+        # Re-check lock inside the semaphore to avoid redundant calculations
+        locked = stability_lock.get_locked_prediction(ticker, style)
+        if locked:
+            payload = {**locked, "price": float(data.price), "timestamp": data.timestamp}
+            await manager.broadcast(payload)
+            return payload
 
-    # --- Tier 2: Multi-Model Ensemble (LLM Refinement) ---
-    if signal != "HOLD" and OPENROUTER_API_KEY:
-        try:
-            timeout = 5.0 if style == "Scalping" else 12.0
-            ensemble_result = await asyncio.wait_for(
-                engine.ensemble_predict(data.ticker, data.price, signal, metrics, style, ohlc),
-                timeout=timeout
-            )
-            if ensemble_result:
-                e_entry, e_sl, e_tp, e_conf, e_reason = ensemble_result
-                # Sanity check: LLM levels must be within 5% of price
-                price = data.price
-                if abs(e_entry - price) / price < 0.05 and abs(e_sl - price) / price < 0.15:
-                    final_entry = e_entry
-                    final_sl = e_sl
-                    final_tp = e_tp
-                    final_conf = (confidence * 0.3 + e_conf * 0.7)
-                    reasoning = e_reason
-                    print(f"[ENSEMBLE] {data.ticker}: E={final_entry:.2f} SL={final_sl:.2f} TP={final_tp:.2f}")
-                else:
-                    print(f"[ENSEMBLE] Sanity check failed, using quant levels")
-                    reasoning = "Quant engine levels (LLM out of range)."
-        except asyncio.TimeoutError:
-            reasoning = f"Real ATR-based levels. Models timed out. ATR={real_atr:.4f}"
-        except Exception as ex:
-            print(f"Ensemble error: {ex}")
-            reasoning = "Quantitative engine confirmed structure with real volatility."
+        # Data Preparation (Calculate technical indicators and neural bias)
+        signal_nn, conf_nn, metrics = await engine.process_tick(data)
+        ohlc = await engine.fetch_real_ohlc_levels(ticker, style)
+        
+        # Strategy Routing
+        engine_dispatch = {
+            "Scalping": analyze_scalping,
+            "Standard": analyze_standard,
+            "Swing": analyze_swing
+        }
+        strategy_engine = engine_dispatch.get(style, analyze_standard)
+        
+        # Assess liquidity and generate core coordinates
+        strat_result = await strategy_engine(ticker, data.price, ohlc if ohlc else metrics, data.sentiment)
+        
+        signal = strat_result["signal"]
+        
+        # If quant engine is neutral but neural model has high conviction, force a signal
+        if signal == "HOLD" and signal_nn != "HOLD" and conf_nn > 0.7:
+            signal = signal_nn
+            strat_result = await strategy_engine(ticker, data.price, ohlc if ohlc else metrics, data.sentiment, force_signal=signal)
 
-    # Final Payload
-    payload = {
-        "type": "TICKER_UPDATE",
-        "ticker": data.ticker,
-        "price": data.price,
-        "entry_price": float(final_entry),
-        "stop_loss": float(final_sl),
-        "target_price": float(final_tp),
-        "signal": signal,
-        "confidence": float(min(0.99, final_conf)),
-        "reasoning": reasoning,
-        "style": style,
-        "metrics": metrics,
-        "timestamp": data.timestamp
-    }
-    
-    await manager.broadcast(payload)
-    return {"status": "ok", "signal": signal, "confidence": float(final_conf)}
+        final_entry = strat_result["entry"]
+        final_sl = strat_result["sl"]
+        final_tp = strat_result["tp"]
+        final_conf = max(strat_result["confidence"], conf_nn)
+        reasoning = strat_result["reasoning"]
+
+        # 4. --- ENSEMBLE REFINEMENT ---
+        if signal != "HOLD" and OPENROUTER_API_KEY:
+            try:
+                ensemble_result = await asyncio.wait_for(
+                    engine.ensemble_predict(ticker, data.price, signal, metrics, style, ohlc if ohlc else metrics),
+                    timeout=8.0
+                )
+                if ensemble_result:
+                    e_entry, e_sl, e_tp, e_conf, e_reason = ensemble_result
+                    # Blend with engine coordinates
+                    final_entry = (final_entry * 0.4) + (e_entry * 0.6)
+                    final_sl = (final_sl * 0.4) + (e_sl * 0.6)
+                    final_tp = (final_tp * 0.4) + (e_tp * 0.6)
+                    final_conf = (final_conf * 0.3) + (e_conf * 0.7)
+                    reasoning = f"{reasoning} Ensemble refined: {e_reason}"
+            except asyncio.TimeoutError:
+                pass
+
+        # 5. --- RECORD & LOCK ---
+        payload = {
+            "type": "TICKER_UPDATE",
+            "ticker": ticker,
+            "price": float(data.price),
+            "entry_price": float(final_entry),
+            "stop_loss": float(final_sl),
+            "target_price": float(final_tp),
+            "signal": signal,
+            "confidence": float(final_conf),
+            "reasoning": reasoning,
+            "style": style,
+            "metrics": metrics,
+            "timestamp": data.timestamp
+        }
+        
+        # Lock this prediction for the remainder of the candlestick
+        stability_lock.lock_prediction(ticker, style, payload)
+        
+        # Record to history if it's a signal
+        if signal != "HOLD":
+            engine.full_prediction_history.append({**payload, "timestamp": time.time()})
+            if len(engine.full_prediction_history) > 200:
+                engine.full_prediction_history.pop(0)
+
+        await manager.broadcast(payload)
+        return payload
 
 # --- Paper Trading Endpoints ---
 @app.get("/api/paper/positions")
@@ -616,6 +721,15 @@ async def get_paper_positions():
         "history": [t.dict() for t in engine.trade_history[-10:]],
         "balance": engine.balance
     }
+
+@app.get("/api/history/predictions")
+async def get_prediction_history(ticker: Optional[str] = None):
+    """Returns the history of AI signals generated."""
+    if ticker:
+        # Filter by ticker and return last 20
+        return [p for p in engine.full_prediction_history if p['ticker'] == ticker][-20:]
+    # Return last 50 total
+    return engine.full_prediction_history[-50:]
 
 @app.post("/api/paper/trade")
 async def place_paper_trade(trade_data: dict):
@@ -650,9 +764,8 @@ async def get_price(ticker: str, style: str = "Standard"):
             style=style
         )
         
-        # Trigger full signal calculation with Tier 1 & 2 logic
+        # Trigger full signal calculation with routing & stability lock
         res_full = await ingest_data(data_obj)
-        
         return res_full
     
     # Fallback to direct fetch (run in thread to avoid blocking async loop)

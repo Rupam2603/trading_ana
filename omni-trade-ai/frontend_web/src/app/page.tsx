@@ -21,6 +21,7 @@ import { AssetSearch, ASSET_CATALOGUE } from '@/components/AssetSearch';
 import { TVChart } from '@/components/TVChart';
 import { LWChart } from '@/components/LWChart';
 import { RiskCalculator } from '@/components/RiskCalculator';
+import { PredictionHistory } from '@/components/PredictionHistory';
 import { useTheme } from '@/app/providers';
 
 
@@ -61,7 +62,7 @@ const TV_SYMBOL_MAP: Record<string, string> = {
 // --- TradingView Technical Analysis Component ---
 const TechnicalAnalysis = memo(({ symbol, tradingMode, paperPositions, paperBalance }: { 
   symbol: string, 
-  tradingMode: 'SCALPING' | 'STANDARD' | 'SWING',
+  tradingMode: 'Scalping' | 'Standard' | 'Swing',
   paperPositions?: any[],
   paperBalance?: number
 }) => {
@@ -83,7 +84,7 @@ const TechnicalAnalysis = memo(({ symbol, tradingMode, paperPositions, paperBala
     script.async = true;
     script.type = "text/javascript";
     script.innerHTML = JSON.stringify({
-      "interval": tradingMode === 'SCALPING' ? "1m" : tradingMode === 'STANDARD' ? "15m" : "4h",
+      "interval": tradingMode === 'Scalping' ? "1m" : tradingMode === 'Standard' ? "15m" : "4h",
       "width": "100%",
       "isTransparent": true,
       "height": 380,
@@ -102,7 +103,7 @@ const TechnicalAnalysis = memo(({ symbol, tradingMode, paperPositions, paperBala
     <div className="bg-zinc-900/30 border border-zinc-800 rounded-xl p-4 overflow-hidden h-[450px]">
       <div className="flex items-center gap-2 text-zinc-500 text-xs uppercase mb-4">
         <Gauge size={14} />
-        <span>Market Sentiment ({tradingMode === 'SCALPING' ? 'Scalping' : tradingMode === 'STANDARD' ? 'Standard' : 'Swing'})</span>
+        <span>Market Sentiment ({tradingMode})</span>
       </div>
       <div ref={container} className="w-full" />
     </div>
@@ -176,7 +177,7 @@ const Dashboard = () => {
 
   const [selectedTicker, setSelectedTicker] = useState("BTCUSD");
   const [selectedTvSymbol, setSelectedTvSymbol] = useState("BINANCE:BTCUSDT");
-  const [tradingMode, setTradingMode] = useState<'SCALPING' | 'STANDARD' | 'SWING'>('SCALPING');
+  const [tradingMode, setTradingMode] = useState<'Scalping' | 'Standard' | 'Swing'>('Scalping');
   const [timeframe, setTimeframe] = useState("1");
   const timeframeRef = useRef(timeframe);
   const mockIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -186,9 +187,9 @@ const Dashboard = () => {
   }, [timeframe]);
 
   useEffect(() => {
-    if (tradingMode === 'SCALPING') setTimeframe('1');
-    else if (tradingMode === 'STANDARD') setTimeframe('15');
-    else if (tradingMode === 'SWING') setTimeframe('240');
+    if (tradingMode === 'Scalping') setTimeframe('5');
+    else if (tradingMode === 'Standard') setTimeframe('15');
+    else if (tradingMode === 'Swing') setTimeframe('240');
   }, [tradingMode]);
 
   const handleAssetSelect = useCallback((id: string, tvSymbol: string) => {
@@ -387,8 +388,7 @@ const Dashboard = () => {
     const fetchDirectPrice = async () => {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${host}:8000`;
-        const currentStyle = timeframeRef.current === '1' ? 'Scalping' : timeframeRef.current === '240' || timeframeRef.current === 'D' ? 'Swing' : 'Standard';
-        const response = await fetch(`${apiUrl}/api/price/${selectedTicker}?style=${currentStyle}`);
+        const response = await fetch(`${apiUrl}/api/price/${selectedTicker}?style=${tradingMode}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         
@@ -617,11 +617,10 @@ const Dashboard = () => {
               OMNITRADE AI <span className="text-[10px] md:text-sm ml-1" style={{ color: 'var(--prediction)' }}>v2.5</span>
             </h1>
             <div className="flex items-center gap-2">
-               <div className={`w-1.5 h-1.5 rounded-full ${tradingMode === 'SCALPING' ? 'bg-orange-500 animate-pulse' : tradingMode === 'STANDARD' ? 'animate-pulse' : 'animate-pulse'}`}
-                 style={{ background: tradingMode === 'SCALPING' ? '#FF9800' : tradingMode === 'STANDARD' ? 'var(--bullish)' : '#B388FF' }}
+               <div className={`w-1.5 h-1.5 rounded-full ${tradingMode === 'Scalping' ? 'bg-orange-500 animate-pulse' : tradingMode === 'Standard' ? 'bg-emerald-500 animate-pulse' : 'bg-purple-500 animate-pulse'}`}
                />
-               <span className="text-[10px] font-bold tracking-widest" style={{ color: 'var(--text-muted)' }}>
-                 {tradingMode === 'SCALPING' ? 'SCALPING_MODE' : tradingMode === 'STANDARD' ? 'STANDARD_MODE' : 'SWING_MODE'}
+               <span className="text-[10px] font-bold tracking-widest text-zinc-400">
+                 {tradingMode.toUpperCase()}_STRATEGY_ENGINE
                </span>
             </div>
           </div>
@@ -634,20 +633,21 @@ const Dashboard = () => {
              <span className="truncate max-w-[100px]">{location}</span>
           </div>
 
-          <div className="flex items-center p-1 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-            {(['SCALPING', 'STANDARD', 'SWING'] as const).map((m) => (
+          <div className="flex items-center p-1 rounded-lg bg-zinc-900 border border-zinc-800 shadow-inner">
+            {(['Scalping', 'Standard', 'Swing'] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setTradingMode(m)}
-                className="px-3 py-1.5 text-[10px] font-bold rounded transition-all"
+                className="px-4 py-1.5 text-[10px] font-bold rounded transition-all duration-300"
                 style={{
                   background: tradingMode === m
-                    ? m === 'SCALPING' ? '#FF9800' : m === 'STANDARD' ? 'var(--bullish)' : '#B388FF'
+                    ? m === 'Scalping' ? '#FF9800' : m === 'Standard' ? '#22C55E' : '#A855F7'
                     : 'transparent',
-                  color: tradingMode === m ? '#000' : 'var(--text-muted)',
+                  color: tradingMode === m ? '#000' : '#71717A',
+                  boxShadow: tradingMode === m ? '0 0 15px rgba(0,0,0,0.2)' : 'none'
                 }}
               >
-                {m}
+                {m.toUpperCase()}
               </button>
             ))}
           </div>
@@ -1054,6 +1054,16 @@ const Dashboard = () => {
                       <span className="text-[10px] text-indigo-300 font-black uppercase tracking-widest">AI Analyst Narrative</span>
                     </div>
 
+                    {/* Consensus Status Badge */}
+                    <div className="mb-4 flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                      <div className="flex -space-x-2">
+                        <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-[8px] font-black border-2 border-zinc-900">O</div>
+                        <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-[8px] font-black border-2 border-zinc-900">D</div>
+                        <div className="w-5 h-5 rounded-full bg-purple-600 flex items-center justify-center text-[8px] font-black border-2 border-zinc-900">Q</div>
+                      </div>
+                      <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Triple-Model Consensus Achieved</span>
+                    </div>
+
                     <div className="text-sm font-medium leading-relaxed text-zinc-300 italic min-h-[60px]">
                       &quot;{liveData.reasoning || "Analyzing market structure and volume profiles for optimal entry alignment..."}&quot;
                     </div>
@@ -1120,7 +1130,7 @@ const Dashboard = () => {
                     )}
                     
                     <div className="pt-2 flex items-center justify-between opacity-50">
-                       <span className="text-[8px] text-zinc-600 font-bold">ENSEMBLE: CLAUDE_OPUS + DEEPSEEK_R1</span>
+                       <span className="text-[8px] text-zinc-600 font-bold">ENSEMBLE: OPUS_4.1 + DEEPSEEK_R1 + QWEN_2.5</span>
                        <div className="flex gap-1">
                           <div className="w-1 h-1 rounded-full bg-zinc-700" />
                           <div className="w-1 h-1 rounded-full bg-zinc-700" />
@@ -1176,6 +1186,9 @@ const Dashboard = () => {
             balance={paperBalance} 
             currentPrice={liveData.price} 
           />
+
+          {/* AI Prediction History */}
+          <PredictionHistory ticker={selectedTicker} />
 
           {/* Technical Analysis (Mobile/Tablet Only) */}
           {isMobile && (

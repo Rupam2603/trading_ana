@@ -119,54 +119,16 @@ function TVAdvancedChart({ symbol, timeframe, height, liveData, paperPositions =
         locale: "en",
         toolbar_bg: theme === "dark" ? "#151A22" : "#ffffff",
         enable_publishing: false,
-        allow_symbol_change: false,
-        hide_top_toolbar: false,
-        hide_legend: false,
-        save_image: true,
+        hide_side_toolbar: false,
+        allow_symbol_change: true,
         container_id: containerId,
-        backgroundColor: theme === "dark" ? "#0B0E14" : "#F4F6FB",
-        gridColor: theme === "dark" ? "#252D3D" : "#D8DCF0",
-        // Pre-load useful studies
-        studies: [
-          "Volume@tv-basicstudies",
-          "RSI@tv-basicstudies",
-          "MACD@tv-basicstudies",
-        ],
-        studies_overrides: {
-          "volume.volume.color.0": "#FF9800",
-          "volume.volume.color.1": "#2196F3",
-          "volume.volume ma.visible": false,
-          "RSI.RSI.linewidth": 2,
-          "RSI.RSI.color": "#B388FF",
-          "MACD.MACD.color": "#2196F3",
-          "MACD.Signal.color": "#FF9800",
-        },
-        overrides: {
-          "mainSeriesProperties.candleStyle.upColor": "#2196F3",
-          "mainSeriesProperties.candleStyle.downColor": "#FF9800",
-          "mainSeriesProperties.candleStyle.borderUpColor": "#2196F3",
-          "mainSeriesProperties.candleStyle.borderDownColor": "#FF9800",
-          "mainSeriesProperties.candleStyle.wickUpColor": "#2196F3",
-          "mainSeriesProperties.candleStyle.wickDownColor": "#FF9800",
-          "paneProperties.background": theme === "dark" ? "#0B0E14" : "#F4F6FB",
-          "paneProperties.backgroundType": "solid",
-          "paneProperties.vertGridProperties.color": theme === "dark" ? "#252D3D" : "#D8DCF0",
-          "paneProperties.horzGridProperties.color": theme === "dark" ? "#252D3D" : "#D8DCF0",
-          "scalesProperties.textColor": theme === "dark" ? "#9BA1C6" : "#5D6494",
-          "scalesProperties.backgroundColor": theme === "dark" ? "#151A22" : "#ffffff",
-        },
-        disabled_features: [
-          "header_symbol_search",
-          "header_compare",
-        ],
-        enabled_features: [
-          "study_templates",
-          "side_toolbar_in_fullscreen_mode",
-          "header_fullscreen_button",
-          "header_screenshot",
-          "header_saveload",
-          "drawing_templates",
-        ],
+        details: true,
+        hotlist: true,
+        calendar: true,
+        show_popup_button: true,
+        popup_width: "1000",
+        popup_height: "650",
+        withdateranges: true,
       });
       widgetRef.current = widget;
     };
@@ -227,12 +189,12 @@ function TVAdvancedChart({ symbol, timeframe, height, liveData, paperPositions =
       {/* TradingView chart fills full area */}
       <div
         ref={containerRef}
-        style={{ width: "100%", height: "100%", borderRadius: "12px", overflow: "hidden" }}
+        style={{ width: "100%", height: "100%" }}
       />
 
       {/* Floating HUD Overlay */}
       <div 
-        className="absolute top-4 left-4 z-10 pointer-events-none select-none flex flex-col gap-2"
+        className="absolute top-16 left-16 z-10 pointer-events-none select-none flex flex-col gap-2"
         style={{ width: "fit-content" }}
       >
         {/* Account Info */}
